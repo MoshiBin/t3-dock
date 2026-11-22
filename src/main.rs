@@ -9,9 +9,9 @@ mod status;
 mod t3;
 mod win;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::ExitCode;
-use std::time::{Duration, SystemTime};
+use std::time::{Duration, Instant, SystemTime};
 
 use jiff::Timestamp;
 use tokio::sync::{mpsc, watch};
@@ -120,6 +120,13 @@ fn execute(cli: Cli) -> Result<(), String> {
     }
 }
 
+fn saved_brightness(file: &Path) -> u8 {
+    std::fs::read_to_string(file)
+        .ok()
+        .and_then(|text| text.trim().parse().ok())
+        .unwrap_or(app::DEFAULT_BRIGHTNESS)
+}
+
 fn stop() -> Result<(), String> {
     if !win::signal_stop() {
         log!("stop: t3-dock is not running");
@@ -140,7 +147,9 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     log!("app: started");
     focus::describe();
 
-    let mut app = App::default();
+    let brightness_file = data.join("brightness");
+    let mut app = App::new(saved_brightness(&brightness_file));
+    let mut saved = app.brightness();
     let (screen_tx, screen_rx) = watch::channel(app.screen());
     let (message_tx, mut messages) = mpsc::channel(64);
     let (view_tx, mut views) = watch::channel(t3::View::default());
@@ -161,7 +170,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     let mut stop_poll = interval(Duration::from_millis(250));
     let mut clock = interval(Duration::from_secs(30));
     let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
-    let mut key_statuses = app.statuses();
+    let mut summary = app.summary();
     let mut last_tick = SystemTime::now();
 
     let result = loop {
@@ -170,6 +179,14 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
             _ = stop_poll.tick() => {
                 if instance.stop_requested() {
                     break Ok(());
+                }
+                app.tick(Instant::now());
+                // Written here, not on every click of the dial.
+                if app.brightness() != saved {
+                    saved = app.brightness();
+                    if std::fs::write(&brightness_file, saved.to_string()).is_err() {
+                        log!("app: cannot save the brightness");
+                    }
                 }
             }
             _ = clock.tick() => {
@@ -193,7 +210,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                 Some(device::Message::Disconnected) => app.release_all(),
                 Some(device::Message::Input(event)) => {
                     log!("input: {event}");
-                    if let Some(target) = app.input(event.action)
+                    if let Some(target) = app.input(event.action, Instant::now())
                         && focus_tx.send(target).is_err()
                     {
                         log!("focus: worker stopped");
@@ -201,14 +218,10 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                 }
             }
         }
-        let statuses = app.statuses();
-        if statuses != key_statuses {
-            key_statuses = statuses;
-            let shown: Vec<String> = statuses
-                .iter()
-                .map(|status| status.map_or("-".to_owned(), |status| format!("{status:?}")))
-                .collect();
-            log!("keys: {}", shown.join(" "));
+        let now_showing = app.summary();
+        if now_showing != summary {
+            summary = now_showing;
+            log!("{summary}");
         }
         let screen = app.screen();
         screen_tx.send_if_modified(|shown| {

@@ -42,7 +42,7 @@ See T3 Code agents on the N3's screen keys. Press one to focus that agent's thre
 
 ## Not yet tested
 
-- Milestone 2 by eye and hand: six live keys.
+- Milestones 2-3 by eye and hand: six live keys, buttons, dials and brightness.
 - Focus as it is now (raise first, then link), and navigation to thread ids that contain `:`.
 - A real T3 restart, USB replug, and sleep and resume.
 - The tray icon (it compiles, nothing more).
@@ -162,7 +162,7 @@ Found while building:
 - The link launches a second T3 process with our environment. Inside a T3 agent shell that has
   `T3CODE_*`, and possibly `ELECTRON_RUN_AS_NODE`, so `main` removes those before anything starts.
 
-## Proposed UX
+## UX
 
     +--------+--------+--------+
     | agent  | agent  | agent  |  title + status color

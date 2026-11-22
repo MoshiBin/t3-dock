@@ -16,6 +16,7 @@ pub const REQUEST_ID: &str = "shell";
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
+    pub project_id: Option<String>,
     pub title: Option<String>,
     pub creation_source: Option<String>,
     pub lineage: Option<Lineage>,
@@ -103,6 +104,8 @@ pub struct Item {
     location: Option<String>,
     thread: Option<Thread>,
     thread_id: Option<String>,
+    project: Option<Project>,
+    project_id: Option<String>,
     snapshot: Option<Snapshot>,
     resolved_repository_identity_roots: Option<Present>,
 }
@@ -112,6 +115,13 @@ pub struct Item {
 struct Snapshot {
     snapshot_sequence: u64,
     threads: Vec<Thread>,
+    projects: Option<Vec<Project>>,
+}
+
+#[derive(Deserialize)]
+struct Project {
+    id: String,
+    title: Option<String>,
 }
 
 /// Where JSON failed to parse, without serde's message, which can quote the offending value.
@@ -176,12 +186,15 @@ impl fmt::Display for StreamError {
 }
 
 pub type Threads = HashMap<String, Arc<Thread>>;
+/// Project names by id.
+pub type Projects = HashMap<String, String>;
 
-/// Active threads as built from one subscription.
+/// Active threads and projects as built from one subscription.
 #[derive(Default)]
 pub struct Shell {
     sequence: Option<u64>,
     pub threads: Threads,
+    pub projects: Projects,
 }
 
 impl Shell {
@@ -200,6 +213,12 @@ impl Shell {
                     .threads
                     .into_iter()
                     .map(|thread| (thread.id.clone(), Arc::new(thread)))
+                    .collect();
+                self.projects = snapshot
+                    .projects
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|project| (project.id, project.title.unwrap_or_default()))
                     .collect();
                 return Ok(Applied::Snapshot);
             }
@@ -230,7 +249,15 @@ impl Shell {
                 // Removal from the archive is how an unarchive arrives, so keep the active copy.
                 !archive && self.threads.remove(&id).is_some()
             }
-            _ => false,
+            "project.updated" => {
+                let project = item.project.ok_or(StreamError::MissingField)?;
+                let title = project.title.unwrap_or_default();
+                self.projects.insert(project.id, title.clone()) != Some(title)
+            }
+            _ => {
+                let id = item.project_id.ok_or(StreamError::MissingField)?;
+                self.projects.remove(&id).is_some()
+            }
         };
         self.sequence = Some(sequence);
         Ok(if changed {
@@ -370,6 +397,19 @@ mod tests {
         let remove = json!({"kind": "thread.removed", "sequence": 11, "location": "active", "threadId": "thread:a"});
         assert_eq!(apply(&mut shell, remove), Ok(Applied::Changed));
         assert!(shell.threads.is_empty());
+    }
+
+    #[test]
+    fn projects_follow_the_stream() {
+        let mut shell = synced();
+        assert!(shell.projects.contains_key("project:x"));
+        let rename = json!({"kind": "project.updated", "sequence": 11,
+                            "project": {"id": "project:x", "title": "Invented project"}});
+        assert_eq!(apply(&mut shell, rename), Ok(Applied::Changed));
+        assert_eq!(shell.projects["project:x"], "Invented project");
+        let remove = json!({"kind": "project.removed", "sequence": 12, "projectId": "project:x"});
+        assert_eq!(apply(&mut shell, remove), Ok(Applied::Changed));
+        assert!(shell.projects.is_empty());
     }
 
     #[test]

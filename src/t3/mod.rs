@@ -21,7 +21,7 @@ use tokio_tungstenite::tungstenite::{self, Message, protocol::WebSocketConfig};
 
 use crate::log::log;
 use http::{Api, Capabilities, server_address};
-use wire::{Applied, ParseError, REQUEST_ID, Shell, StreamError, Threads};
+use wire::{Applied, ParseError, Projects, REQUEST_ID, Shell, StreamError, Threads};
 
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(20);
@@ -45,6 +45,7 @@ pub struct View {
     pub phase: Phase,
     pub environment_id: String,
     pub threads: Arc<Threads>,
+    pub projects: Arc<Projects>,
 }
 
 #[derive(Debug)]
@@ -277,6 +278,7 @@ async fn stream(
                         phase: Phase::Live,
                         environment_id: prepared.environment_id.clone(),
                         threads: Arc::new(shell.threads.clone()),
+                        projects: Arc::new(shell.projects.clone()),
                     });
                 }
             }

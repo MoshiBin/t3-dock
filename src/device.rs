@@ -26,7 +26,6 @@ use crate::render::{Renderer, SIZE, Tile};
 const QUERY: DeviceQuery = DeviceQuery::new(65440, 1, 0x6603, 0x1003);
 const JPEG_QUALITY: u8 = 90;
 const REPORT_LENGTH: usize = 512;
-const BRIGHTNESS: u8 = 60;
 const KEEP_ALIVE: Duration = Duration::from_secs(15);
 const WRITE_TIMEOUT: Duration = Duration::from_secs(5);
 const RETRY: Duration = Duration::from_secs(3);
@@ -114,12 +113,13 @@ async fn session(
     let mut renderer = Renderer::new();
     let mut sent: [Option<Tile>; SCREEN_KEYS] = Default::default();
 
-    // Initializing sets brightness to zero, so it has to be set again every time.
-    write("brightness", device.set_brightness(BRIGHTNESS)).await?;
-    write("clear", device.clear_all_button_images()).await?;
     let first = screen.borrow_and_update().clone();
+    // Initializing sets brightness to zero, so it has to be set again every time.
+    write("brightness", device.set_brightness(first.brightness)).await?;
+    write("clear", device.clear_all_button_images()).await?;
     draw(&device, &mut renderer, &mut sent, &first.tiles).await?;
     let mut generation = first.generation;
+    let mut brightness = first.brightness;
     log!("device: connected, {SCREEN_KEYS} key images sent");
 
     // Raw reports, because mirajazz's decoded states lose other keys that are held.
@@ -138,10 +138,13 @@ async fn session(
                     return Ok(());
                 }
                 let next = screen.borrow_and_update().clone();
-                if next.generation != generation {
+                if next.generation != generation || next.brightness != brightness {
+                    if next.generation != generation {
+                        sent = Default::default();
+                    }
                     generation = next.generation;
-                    sent = Default::default();
-                    write("brightness", device.set_brightness(BRIGHTNESS)).await?;
+                    brightness = next.brightness;
+                    write("brightness", device.set_brightness(brightness)).await?;
                 }
                 draw(&device, &mut renderer, &mut sent, &next.tiles).await?;
             }
@@ -232,6 +235,7 @@ mod tests {
             .unwrap();
         let (screens, screen) = watch::channel(Screen {
             tiles: std::array::from_fn(|key| Tile::numbered(key + 1)),
+            brightness: crate::app::DEFAULT_BRIGHTNESS,
             generation: 0,
         });
         let (messages, _inputs) = mpsc::channel(64);

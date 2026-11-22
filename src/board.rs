@@ -6,7 +6,7 @@
 
 use crate::input::SCREEN_KEYS;
 
-const NEEDS_USER: u8 = 0;
+pub const NEEDS_USER: u8 = 0;
 const FINISHED: u8 = 3;
 const IDLE: u8 = 4;
 
@@ -29,6 +29,33 @@ fn may_displace(candidate: u8, shown: u8) -> bool {
 impl Board {
     pub fn get(&self, position: usize) -> Option<&str> {
         self.slots.get(position)?.as_deref()
+    }
+
+    /// The furthest scroll, which keeps the last thread on screen and moves by whole rows.
+    pub fn last_offset(&self) -> usize {
+        let used = self
+            .slots
+            .iter()
+            .rposition(Option::is_some)
+            .map_or(0, |last| last + 1);
+        used.saturating_sub(SCREEN_KEYS).div_ceil(3) * 3
+    }
+
+    /// Updates the board while another page is on screen: nothing moves.
+    pub fn freeze(&mut self, ranked: &[Entry]) {
+        for slot in &mut self.slots {
+            if slot
+                .as_ref()
+                .is_some_and(|id| !ranked.iter().any(|entry| entry.id == *id))
+            {
+                *slot = None;
+            }
+        }
+        for entry in ranked {
+            if !self.slots.iter().flatten().any(|id| *id == entry.id) {
+                self.slots.push(Some(entry.id.clone()));
+            }
+        }
     }
 
     /// Updates the board while home is on screen.

@@ -3,8 +3,8 @@
 Open-source host app that shows [T3 Code](https://github.com/pingdotgg/t3code) agent threads on the
 screen keys of a MiraBox N3 and focuses a thread when you press its key. The stock firmware stays.
 
-**Status: milestone 2 of 4.** All six keys show live threads. Milestone 1 was confirmed on real
-hardware. Design, findings and milestones are in
+**Status: milestone 3 of 4.** Six live keys, three buttons and three dials. Milestone 1 was
+confirmed on real hardware. Design, findings and milestones are in
 [docs/HANDOFF.md](docs/HANDOFF.md).
 
 ## Build (Windows)
@@ -26,6 +26,10 @@ A running t3-dock locks its exe, so run `t3-dock stop` before rebuilding.
     t3-dock stop    stop the running instance and blank the keys
 
 Close MiraBox's own app first.
+
+The keys without screens are previous page, next thread that needs you, and next page. The top dial
+scrolls (press: home), the bottom-left dial sets brightness (press: 60%), and the bottom-right dial
+filters by project (hold: show project names).
 
 `auth` asks T3's CLI for a 30-day token with only `orchestration:read`, labeled `t3-dock`, and saves it
 encrypted for your Windows user (DPAPI). That scope can also read files and thread contents, so t3-dock
