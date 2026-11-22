@@ -12,6 +12,7 @@ permissions:
 
 env:
   # Same toolchain as a local build (see README): Rust gnullvm host + llvm-mingw UCRT.
+  LLVM_MINGW_VERSION: "20261117"
   LLVM_MINGW: llvm-mingw-20261117-ucrt-x86_64
   CARGO_TERM_COLOR: always
 
@@ -22,13 +23,13 @@ jobs:
       run:
         shell: bash
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install llvm-mingw
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release download "${LLVM_MINGW#llvm-mingw-}" -R mstorsjo/llvm-mingw \
+          gh release download "$LLVM_MINGW_VERSION" -R mstorsjo/llvm-mingw \
             -p "$LLVM_MINGW.zip" -D "$RUNNER_TEMP"
           unzip -q "$RUNNER_TEMP/$LLVM_MINGW.zip" -d "$RUNNER_TEMP"
           echo "$RUNNER_TEMP/$LLVM_MINGW/bin" >> "$GITHUB_PATH"
@@ -47,7 +48,7 @@ jobs:
       - run: cargo test
       - run: cargo build --release
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         with:
           name: t3-dock-${{ github.sha }}
           path: target/release/t3-dock.exe
@@ -60,7 +61,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/download-artifact@v8
         with:
           name: t3-dock-${{ github.sha }}
       - name: Create release
