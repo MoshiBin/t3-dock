@@ -72,7 +72,18 @@ impl Tile {
         }
     }
 
+    pub fn blank() -> Self {
+        Self {
+            banner: String::new(),
+            body: String::new(),
+            accent: DARK,
+            large: false,
+            pressed: false,
+        }
+    }
+
     /// A numbered tile that shows image index and which way is up.
+    #[cfg(test)]
     pub fn numbered(number: usize) -> Self {
         Self {
             banner: format!("KEY {number}"),

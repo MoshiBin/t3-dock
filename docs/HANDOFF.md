@@ -35,11 +35,14 @@ See T3 Code agents on the N3's screen keys. Press one to focus that agent's thre
 - User-scope toolchain: rustup stable gnullvm (1.100.0) and winget llvm-mingw.
 - A token issued through the CLI has exactly `orchestration:read`.
 - The authenticated stream: snapshot, acks, updates after the first ack, heartbeats.
+- Recovery from a T3 restart on another port and from a rejected token, against a stand-in server
+  (`src/t3/recovery_tests.rs`).
 - HID reads survive redraws: 8 of 8 runs, against 2 of 3 failing before the fix (see the traps).
 - Single instance, graceful stop, and starting with T3 unreachable.
 
 ## Not yet tested
 
+- Milestone 2 by eye and hand: six live keys.
 - Focus as it is now (raise first, then link), and navigation to thread ids that contain `:`.
 - A real T3 restart, USB replug, and sleep and resume.
 - The tray icon (it compiles, nothing more).
@@ -172,6 +175,7 @@ Found while building:
 - A thread keeps its key while active, so nothing moves under the user's finger.
 - Subagents fold into their parent.
 - The title fills a key, so the project shows while the bottom-right dial is held.
+- Keys move only at home (`src/board.rs`). A page the user scrolled to is frozen.
 
 ## Milestones
 

@@ -1,4 +1,5 @@
 mod app;
+mod board;
 mod device;
 mod focus;
 mod input;
@@ -10,7 +11,7 @@ mod win;
 
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
+use std::time::{Duration, SystemTime};
 
 use jiff::Timestamp;
 use tokio::sync::{mpsc, watch};
@@ -20,23 +21,21 @@ use crate::app::App;
 use crate::log::log;
 
 const USAGE: &str = "usage:
-  t3-dock [run] [--thread <thread id>]   show a thread on key 1
-  t3-dock auth                           create or check the read-only T3 token
-  t3-dock stop                           stop the running instance";
+  t3-dock [run]    show threads on the N3
+  t3-dock auth     create or check the read-only T3 token
+  t3-dock stop     stop the running instance";
+
+const RESUME_GAP: Duration = Duration::from_secs(60);
 
 enum Cli {
-    Run { thread: Option<String> },
+    Run,
     Auth,
     Stop,
 }
 
 fn parse(args: &[&str]) -> Option<Cli> {
-    let run = |thread: Option<&str>| Cli::Run {
-        thread: thread.map(str::to_owned),
-    };
     match args {
-        [] | ["run"] => Some(run(None)),
-        ["--thread", id] | ["run", "--thread", id] => Some(run(Some(id))),
+        [] | ["run"] => Some(Cli::Run),
         ["auth"] => Some(Cli::Auth),
         ["stop"] => Some(Cli::Stop),
         _ => None,
@@ -109,14 +108,14 @@ fn execute(cli: Cli) -> Result<(), String> {
     match cli {
         Cli::Auth => t3::auth::setup(&t3_home, &data),
         Cli::Stop => stop(),
-        Cli::Run { thread } => {
+        Cli::Run => {
             let instance = win::Instance::claim().ok_or("t3-dock is already running")?;
             let runtime = tokio::runtime::Builder::new_multi_thread()
                 .worker_threads(2)
                 .enable_all()
                 .build()
                 .map_err(|_| "cannot start the async runtime")?;
-            runtime.block_on(run(&instance, t3_home, data, thread))
+            runtime.block_on(run(&instance, t3_home, data))
         }
     }
 }
@@ -137,16 +136,11 @@ fn stop() -> Result<(), String> {
     Err("t3-dock did not stop within 10 seconds".into())
 }
 
-async fn run(
-    instance: &win::Instance,
-    t3_home: PathBuf,
-    data: PathBuf,
-    thread: Option<String>,
-) -> Result<(), String> {
+async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Result<(), String> {
     log!("app: started");
     focus::describe();
 
-    let mut app = App::new(thread);
+    let mut app = App::default();
     let (screen_tx, screen_rx) = watch::channel(app.screen());
     let (message_tx, mut messages) = mpsc::channel(64);
     let (view_tx, mut views) = watch::channel(t3::View::default());
@@ -167,7 +161,8 @@ async fn run(
     let mut stop_poll = interval(Duration::from_millis(250));
     let mut clock = interval(Duration::from_secs(30));
     let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
-    let mut key_status = None;
+    let mut key_statuses = app.statuses();
+    let mut last_tick = SystemTime::now();
 
     let result = loop {
         tokio::select! {
@@ -177,7 +172,16 @@ async fn run(
                     break Ok(());
                 }
             }
-            _ = clock.tick() => app.refresh(Timestamp::now()),
+            _ = clock.tick() => {
+                // The wall clock jumping means the PC slept, and the N3 may have lost its images.
+                let now = SystemTime::now();
+                if now.duration_since(last_tick).is_ok_and(|gap| gap > RESUME_GAP) {
+                    log!("app: resumed from sleep, redrawing");
+                    app.redraw();
+                }
+                last_tick = now;
+                app.refresh(Timestamp::now());
+            }
             changed = views.changed() => {
                 if changed.is_err() {
                     break Err("the T3 client stopped".to_owned());
@@ -197,13 +201,14 @@ async fn run(
                 }
             }
         }
-        let status = app.status();
-        if status != key_status {
-            key_status = status;
-            match status {
-                Some(status) => log!("key 1: thread shown, status={status:?}"),
-                None => log!("key 1: no thread shown"),
-            }
+        let statuses = app.statuses();
+        if statuses != key_statuses {
+            key_statuses = statuses;
+            let shown: Vec<String> = statuses
+                .iter()
+                .map(|status| status.map_or("-".to_owned(), |status| format!("{status:?}")))
+                .collect();
+            log!("keys: {}", shown.join(" "));
         }
         let screen = app.screen();
         screen_tx.send_if_modified(|shown| {

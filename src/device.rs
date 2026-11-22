@@ -18,8 +18,8 @@ use mirajazz::types::{DeviceInput, HidDevice};
 use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::{Instant, MissedTickBehavior, interval, sleep, timeout};
 
-use crate::app::{KEYS, Screen};
-use crate::input;
+use crate::app::Screen;
+use crate::input::{self, SCREEN_KEYS};
 use crate::log::log;
 use crate::render::{Renderer, SIZE, Tile};
 
@@ -112,14 +112,15 @@ async fn session(
         .await
         .map_err(|error| format!("open failed: {error}"))?;
     let mut renderer = Renderer::new();
-    let mut sent: [Option<Tile>; KEYS] = Default::default();
+    let mut sent: [Option<Tile>; SCREEN_KEYS] = Default::default();
 
     // Initializing sets brightness to zero, so it has to be set again every time.
     write("brightness", device.set_brightness(BRIGHTNESS)).await?;
     write("clear", device.clear_all_button_images()).await?;
     let first = screen.borrow_and_update().clone();
-    draw(&device, &mut renderer, &mut sent, &first).await?;
-    log!("device: connected, {KEYS} key images sent");
+    draw(&device, &mut renderer, &mut sent, &first.tiles).await?;
+    let mut generation = first.generation;
+    log!("device: connected, {SCREEN_KEYS} key images sent");
 
     // Raw reports, because mirajazz's decoded states lose other keys that are held.
     let reader = device.get_reader(|_, _| Ok(DeviceInput::NoData));
@@ -137,7 +138,12 @@ async fn session(
                     return Ok(());
                 }
                 let next = screen.borrow_and_update().clone();
-                draw(&device, &mut renderer, &mut sent, &next).await?;
+                if next.generation != generation {
+                    generation = next.generation;
+                    sent = Default::default();
+                    write("brightness", device.set_brightness(BRIGHTNESS)).await?;
+                }
+                draw(&device, &mut renderer, &mut sent, &next.tiles).await?;
             }
             _ = keep_alive.tick() => write("keep-alive", device.keep_alive()).await?,
         }
@@ -166,11 +172,11 @@ async fn read_inputs(
 async fn draw(
     device: &Device,
     renderer: &mut Renderer,
-    sent: &mut [Option<Tile>; KEYS],
-    screen: &Screen,
+    sent: &mut [Option<Tile>; SCREEN_KEYS],
+    tiles: &[Tile; SCREEN_KEYS],
 ) -> Result<(), String> {
     let mut changed = false;
-    for (key, tile) in screen.iter().enumerate() {
+    for (key, tile) in tiles.iter().enumerate() {
         if sent[key].as_ref() == Some(tile) {
             continue;
         }
@@ -224,12 +230,15 @@ mod tests {
             .into_iter()
             .next()
             .unwrap();
-        let (screens, screen) = watch::channel(std::array::from_fn(|key| Tile::numbered(key + 1)));
+        let (screens, screen) = watch::channel(Screen {
+            tiles: std::array::from_fn(|key| Tile::numbered(key + 1)),
+            generation: 0,
+        });
         let (messages, _inputs) = mpsc::channel(64);
         let mut task = tokio::spawn(session(info, screen, messages));
         for _ in 0..2 {
             sleep(Duration::from_secs(1)).await;
-            screens.send_modify(|screen: &mut Screen| screen[1].pressed ^= true);
+            screens.send_modify(|screen: &mut Screen| screen.tiles[1].pressed ^= true);
         }
         // Longer than tokio keeps an idle blocking thread.
         if let Ok(ended) = timeout(Duration::from_secs(20), &mut task).await {

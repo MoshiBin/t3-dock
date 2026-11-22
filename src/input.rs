@@ -4,6 +4,8 @@
 
 use std::fmt;
 
+pub const SCREEN_KEYS: usize = 6;
+
 const CODE: usize = 9;
 const STATE: usize = 10;
 

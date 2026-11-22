@@ -4,6 +4,8 @@
 
 pub mod auth;
 mod http;
+#[cfg(test)]
+mod recovery_tests;
 pub mod wire;
 
 use std::fmt;
@@ -25,7 +27,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 const SNAPSHOT_TIMEOUT: Duration = Duration::from_secs(20);
 const HEARTBEAT: Duration = Duration::from_secs(30);
 const MAX_MESSAGE: usize = 64 * 1024 * 1024;
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
+// Short, because it is all loopback and T3 restarts in seconds.
+const MAX_BACKOFF: Duration = Duration::from_secs(5);
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Phase {
