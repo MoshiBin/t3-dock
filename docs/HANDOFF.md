@@ -17,15 +17,32 @@ See T3 Code agents on the N3's screen keys. Press one to focus that agent's thre
 ## Tested
 
 - `mirajazz` 0.16.3, `cosmic-text` 0.19, `tokio-tungstenite` 0.30 and `tray-icon` 0.26 build with Rust 1.100.0 gnullvm + llvm-mingw 20261117.
-- `mirajazz` finds and opens the N3. No reports were written to it.
+- `mirajazz` finds and opens the N3.
 - `tokio-tungstenite` reaches `ws://127.0.0.1:3773/ws` (401 without a ticket, as expected).
 - `cosmic-text` renders mixed Hebrew/English correctly at 64x64. About four short lines fit.
 - A release exe with those crates runs without the toolchain on PATH.
 
+### Confirmed by the user on the hardware, 2026-11-22 (milestone 1)
+
+- Image rotation and key order.
+- Every input code in the table below, with down and up for keys and dial presses.
+- Deep-link navigation to a thread with a UUID id, with T3 in front, covered and minimized.
+- The left dial reported twice for each requested click, in both directions. The other dials reported
+  once. It is unknown whether that is the dial or the hand.
+
+### Tested from the host side
+
+- User-scope toolchain: rustup stable gnullvm (1.100.0) and winget llvm-mingw.
+- A token issued through the CLI has exactly `orchestration:read`.
+- The authenticated stream: snapshot, acks, updates after the first ack, heartbeats.
+- HID reads survive redraws: 8 of 8 runs, against 2 of 3 failing before the fix (see the traps).
+- Single instance, graceful stop, and starting with T3 unreachable.
+
 ## Not yet tested
 
-Drawing on the screens, every input code, reading input at all, the authenticated stream,
-deep-link focus, and the tray icon (it compiles, nothing more).
+- Focus as it is now (raise first, then link), and navigation to thread ids that contain `:`.
+- A real T3 restart, USB replug, and sleep and resume.
+- The tray icon (it compiles, nothing more).
 
 ## Hardware
 
@@ -35,7 +52,7 @@ Tested, from descriptors:
 - Control interface MI_00: usage page 65440, usage 1. Report sizes including the id byte: in 513,
   out 1025, feature 0. MI_01 is a keyboard interface that Windows owns: ignore it.
 
-Read from the mirajazz source and MiraBox's MIT SDK
+Read from the mirajazz source and, for images and input, confirmed on the device. See also MiraBox's MIT SDK
 (`Python-SDK/src/StreamDock/Devices/StreamDockN3.py`):
 
 - Protocol v3: `Device::connect(info, 3, 9, 3)`.
@@ -44,7 +61,7 @@ Read from the mirajazz source and MiraBox's MIT SDK
 
 | Control (hex codes) | Codes |
 |---|---|
-| Screen keys, presumed top-left to bottom-right | `01`..`06` |
+| Screen keys, top-left to bottom-right | `01`..`06` |
 | Keys without screens | `25`, `30`, `31` |
 | Left dial: left, right, press | `90`, `91`, `33` |
 | Top dial: left, right, press | `50`, `51`, `35` |
@@ -54,12 +71,15 @@ mirajazz traps:
 
 - Image key indices are 0-based. The library adds 1 on the wire.
 - `set_button_image` only caches. Nothing appears until `flush()`.
-- `set_button_image` uses `block_in_place`, so it needs a multi-thread tokio runtime.
+- Don't call `set_button_image`: it uses `block_in_place`. That retires the runtime thread 10 s later,
+  and Windows cancels any overlapped read that thread issued (`0x800703E3`), dropping the connection.
+  `src/device.rs` encodes the JPEG itself, calls `write_image`, and keeps all HID I/O on one thread.
 - Call `keep_alive()` periodically. opendeck-akp03 uses 15 s.
 - `ButtonStateChange` is a whole-state vector. Building one from a single event loses other held keys,
-  so consider `raw_read_data(512)` and emitting our own events.
+  so we decode raw reports and emit our own events.
 - The firmware version is always `None` on Windows (mirajazz issue 10).
 - Don't run MiraBox's own app at the same time.
+- Initializing sets brightness to 0, so set it after every connect.
 
 ## T3 Code protocol
 
@@ -108,6 +128,10 @@ Thread fields we need. Parse leniently and ignore the rest:
 - Unread: `latestRunCompletedAt > lastVisitedAt`
 - Visibility and order: `archivedAt, deletedAt, settledOverride, snoozedUntil, snoozedAt, pinnedAt, updatedAt`
 
+Read from the server bundle: updates are coalesced per thread and sorted by sequence, so dropping
+`sequence <= last` is safe. A `snapshot` with `resolvedRepositoryIdentityRoots` is only a project
+refresh with an empty thread list: don't apply it.
+
 `pendingRuntimeRequest.kind` is `user_input`, `auth_refresh`, or otherwise an approval.
 `latestVisibleMessage.text` is conversation content: do not deserialize it.
 
@@ -116,13 +140,24 @@ approvals bubbling up to the parent. It is MIT, so it can be ported with attribu
 
 ## Focus
 
-Read from the installed desktop bundle, never fired:
+Read from the installed desktop bundle, then fired on the hardware:
 
 - `t3code://threads/<environmentId>/<threadId>` goes through the second-instance handler to the renderer's
   router, then activates the window. Percent-encode both parts: thread ids may contain `:`.
 - Open it with ShellExecuteW, never `cmd /c start`, because the ids come from the server.
-- Likely snag: the Windows foreground lock. A HID report is not user input to Windows, so T3 may only
-  flash in the taskbar. Test with another app in front and with T3 minimized, then fix with Win32 if needed.
+- The Windows foreground lock applies, because a HID report is not user input to Windows.
+
+Found while building:
+
+- T3's link handler only does a plain window activate. Measured with `ForegroundLockTimeout` at its
+  maximum: the link alone raised a minimized T3 in 271 ms but never a covered one within 1.5 s, and
+  the user pressed again while waiting. So `src/focus.rs` raises first (`AttachThreadInput` +
+  `SetForegroundWindow`), then opens the link, then retries until T3 is in front. One of the two
+  measured raise calls returned false, hence the retries.
+- `lastVisitedAt` did not change when a press opened an already read thread, so it can't confirm
+  navigation.
+- The link launches a second T3 process with our environment. Inside a T3 agent shell that has
+  `T3CODE_*`, and possibly `ELECTRON_RUN_AS_NODE`, so `main` removes those before anything starts.
 
 ## Proposed UX
 
@@ -132,11 +167,11 @@ Read from the installed desktop bundle, never fired:
     | agent  | agent  | agent  |  press = focus that thread
     +--------+--------+--------+
      [prev]  [needs you]  [next]
-     dials: scroll threads, brightness, filter by project
+     dials: top = scroll, bottom-left = brightness, bottom-right = filter by project
 
 - A thread keeps its key while active, so nothing moves under the user's finger.
 - Subagents fold into their parent.
-- The title fills a key, so show the project as a color or while a dial is held.
+- The title fills a key, so the project shows while the bottom-right dial is held.
 
 ## Milestones
 

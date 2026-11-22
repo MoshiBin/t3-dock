@@ -6,17 +6,35 @@ license = "MIT"
 description = "Shows T3 Code agent threads on a MiraBox N3 and focuses one on key press"
 publish = false
 
-# Only the probe uses these so far. Move each to [dependencies] when the app starts using it.
-[dev-dependencies]
+[dependencies]
 cosmic-text = "0.19"
-image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+image = { version = "0.25", default-features = false, features = ["jpeg"] }
+jiff = "1"
 mirajazz = "0.16.3"
-tokio = { version = "1", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "signal", "sync", "time"] }
+# No TLS: t3-dock only talks plain HTTP to loopback.
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
+ureq = { version = "3", default-features = false }
+
+[dependencies.windows-sys]
+version = "0.61"
+features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Cryptography",
+    "Win32_System_Registry",
+    "Win32_System_Threading",
+    "Win32_UI_Shell",
+    "Win32_UI_Shell_Common",
+    "Win32_UI_WindowsAndMessaging",
+]
+
+[dev-dependencies]
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
 
 [profile.release]
 lto = "thin"
 strip = true
-
-[lints.cargo]
-# The probe's dev-dependencies look unused to the empty unit-test target. Remove once src/ uses them.
-unused_dependencies = "allow"
