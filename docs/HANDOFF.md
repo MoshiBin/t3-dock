@@ -137,7 +137,7 @@ Stream items, by `kind`:
 
 Thread fields we need. Parse leniently and ignore the rest:
 
-- Identity: `id, projectId, title, creationSource, lineage.{parentThreadId, relationshipToParent}`
+- Identity: `id, projectId, title, creationSource, lineage.{parentThreadId, relationshipToParent, sideChat}`
 - Run: `status, activityRunStatus, latestRunId, activeProviderThreadId, blockedOnThreadWait,
   pendingBackgroundTasks[].{kind, awaited}, lastErrorClass, limitRecovery`
 - Needs you: `pendingRuntimeRequest.{kind, blocking}, pendingGuestMessageCount`, and
@@ -187,7 +187,9 @@ Found while building:
      dials: top = scroll, bottom-left = brightness, bottom-right = filter by project
 
 - A thread keeps its key while active, so nothing moves under the user's finger.
-- Subagents fold into their parent.
+- Subagents and side chats fold into their parent, as in T3's sidebar
+  (`relationshipToParent != "subagent" && sideChat != true` is a top-level thread). A side chat's
+  approval or question shows on its direct parent, even a settled one.
 - The title fills a key, so the project shows while the bottom-right dial is held.
 - Keys move only at home (`src/board.rs`). A page the user scrolled to is frozen.
 
