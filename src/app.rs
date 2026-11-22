@@ -91,15 +91,15 @@ impl App {
         if self.view.phase != Phase::Live {
             return;
         }
-        let approvals = status::approval_parents(&self.view.threads);
+        let requests = status::child_requests(&self.view.threads);
         let mut ranked: Vec<_> = self
             .view
             .threads
             .values()
             .filter_map(|thread| {
-                let approval = approvals.contains(thread.id.as_str());
-                status::is_relevant(thread, now, approval)
-                    .then(|| (status::classify(thread, approval).urgency(), thread))
+                let child = requests.get(thread.id.as_str()).copied();
+                status::is_relevant(thread, now, child)
+                    .then(|| (status::classify(thread, child).urgency(), thread))
             })
             .collect();
         ranked.sort_by(|(a_urgency, a), (b_urgency, b)| {
@@ -322,12 +322,12 @@ impl App {
     }
 
     fn statuses(&self) -> [Option<Status>; SCREEN_KEYS] {
-        let approvals = status::approval_parents(&self.view.threads);
+        let requests = status::child_requests(&self.view.threads);
         std::array::from_fn(|key| {
             let thread = self.view.threads.get(self.thread_on(key)?)?;
             Some(status::classify(
                 thread,
-                approvals.contains(thread.id.as_str()),
+                requests.get(thread.id.as_str()).copied(),
             ))
         })
     }

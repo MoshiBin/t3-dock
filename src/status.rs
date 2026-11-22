@@ -3,7 +3,7 @@
 //! The rules are ported from `src/status.ts` in beastyrabbit/opendeck-t3-code-status dc27f17
 //! (MIT, see THIRD_PARTY.md), which mirrors T3 Code's own sidebar.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
 
@@ -141,7 +141,7 @@ fn has_guest_message(thread: &Thread) -> bool {
         .is_some_and(|count| count > 0)
 }
 
-pub fn is_subagent(thread: &Thread) -> bool {
+fn is_subagent(thread: &Thread) -> bool {
     thread
         .lineage
         .as_ref()
@@ -149,15 +149,52 @@ pub fn is_subagent(thread: &Thread) -> bool {
         == Some("subagent")
 }
 
+fn is_side_chat(thread: &Thread) -> bool {
+    thread
+        .lineage
+        .as_ref()
+        .and_then(|lineage| lineage.side_chat)
+        == Some(true)
+}
+
+/// Subagents and side chats live inside their parent in T3, not in its sidebar.
+pub fn is_child(thread: &Thread) -> bool {
+    is_subagent(thread) || is_side_chat(thread)
+}
+
 fn parent_id(thread: &Thread) -> Option<&str> {
     thread.lineage.as_ref()?.parent_thread_id.as_deref()
 }
 
-/// Threads with a live subagent that waits for an approval. A coordinator answers its subagent's
-/// questions and provider-native subagents ask on their parent, so neither is flagged.
-pub fn approval_parents(threads: &Threads) -> HashSet<&str> {
-    let mut flagged = HashSet::new();
+/// What children ask of their parents: `Approval` or `Input`, by parent id.
+///
+/// A live subagent's approval reaches every parent up to the top thread. A coordinator answers
+/// its subagent's questions and provider-native subagents ask on their parent, so neither is
+/// flagged. A side chat's approval or question reaches its direct parent.
+pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
+    let mut flagged = HashMap::new();
+    let mut flag = |id, status| {
+        let current = flagged.entry(id).or_insert(status);
+        if status == Status::Approval {
+            *current = status;
+        }
+    };
     for child in threads.values() {
+        if is_side_chat(child) {
+            let request = child
+                .pending_runtime_request
+                .as_ref()
+                .and_then(|request| request.kind.as_deref());
+            let status = match request {
+                None | Some("auth_refresh") => continue,
+                Some("user_input") => Status::Input,
+                Some(_) => Status::Approval,
+            };
+            if let Some(parent) = parent_id(child) {
+                flag(parent, status);
+            }
+            continue;
+        }
         if !is_subagent(child)
             || child.creation_source.as_deref() == Some("provider")
             || !has_pending_approval(child)
@@ -180,21 +217,22 @@ pub fn approval_parents(threads: &Threads) -> HashSet<&str> {
             if !seen.insert(id) {
                 break;
             }
-            flagged.insert(id);
+            flag(id, Status::Approval);
             next = threads
                 .get(id)
-                .filter(|parent| is_subagent(parent))
+                .filter(|parent| is_child(parent))
                 .and_then(|parent| parent_id(parent));
         }
     }
     flagged
 }
 
-pub fn classify(thread: &Thread, subagent_approval: bool) -> Status {
-    if subagent_approval || has_pending_approval(thread) {
+/// `child` is what the thread's children ask of it, from `child_requests`.
+pub fn classify(thread: &Thread, child: Option<Status>) -> Status {
+    if child == Some(Status::Approval) || has_pending_approval(thread) {
         return Status::Approval;
     }
-    if has_pending_input(thread) || has_guest_message(thread) {
+    if child == Some(Status::Input) || has_pending_input(thread) || has_guest_message(thread) {
         return Status::Input;
     }
     let status = runtime_status(thread);
@@ -243,13 +281,13 @@ pub fn classify(thread: &Thread, subagent_approval: bool) -> Status {
 }
 
 // Only a request for the user or a fresh failure ends a snooze early.
-fn is_snoozed(thread: &Thread, now: Timestamp, subagent_approval: bool) -> bool {
+fn is_snoozed(thread: &Thread, now: Timestamp, child_request: bool) -> bool {
     let Some(wake_at) = millis(thread.snoozed_until.as_deref()) else {
         return false;
     };
     if wake_at <= now.as_millisecond()
         || thread.pending_runtime_request.is_some()
-        || subagent_approval
+        || child_request
         || has_guest_message(thread)
     {
         return false;
@@ -270,16 +308,17 @@ fn is_snoozed(thread: &Thread, now: Timestamp, subagent_approval: bool) -> bool 
 }
 
 /// Whether a thread deserves a key.
-pub fn is_relevant(thread: &Thread, now: Timestamp, subagent_approval: bool) -> bool {
-    if thread.archived_at.is_some() || thread.deleted_at.is_some() || is_subagent(thread) {
+pub fn is_relevant(thread: &Thread, now: Timestamp, child: Option<Status>) -> bool {
+    if thread.archived_at.is_some() || thread.deleted_at.is_some() || is_child(thread) {
         return false;
     }
-    if is_snoozed(thread, now, subagent_approval) {
+    let child_request = child.is_some();
+    if is_snoozed(thread, now, child_request) {
         return false;
     }
     // T3 settles threads itself, but live work and requests stay visible.
     thread.settled_override.as_deref() != Some("settled")
-        || subagent_approval
+        || child_request
         || thread.pending_runtime_request.is_some()
         || has_guest_message(thread)
         || has_active_run(thread)
@@ -305,14 +344,14 @@ mod tests {
     }
 
     fn status(fields: Value) -> Status {
-        classify(&thread(fields), false)
+        classify(&thread(fields), None)
     }
 
     fn relevant(fields: Value) -> bool {
         is_relevant(
             &thread(fields),
             "2030-01-01T12:00:00Z".parse().unwrap(),
-            false,
+            None,
         )
     }
 
@@ -434,6 +473,9 @@ mod tests {
         assert!(relevant(
             json!({"lineage": {"relationshipToParent": "fork"}})
         ));
+        assert!(!relevant(
+            json!({"lineage": {"relationshipToParent": "fork", "sideChat": true}})
+        ));
         assert!(!relevant(json!({"settledOverride": "settled"})));
         assert!(relevant(
             json!({"settledOverride": "settled", "status": "running"})
@@ -454,44 +496,114 @@ mod tests {
                                  "status": "failed", "updatedAt": BEFORE})));
     }
 
+    fn child(id: &str, parent: &str, relationship: Value, extra: Value) -> Thread {
+        let mut fields = json!({"id": id, "lineage": {"parentThreadId": parent}});
+        for (key, field) in relationship.as_object().unwrap() {
+            fields["lineage"][key] = field.clone();
+        }
+        for (key, field) in extra.as_object().unwrap() {
+            fields[key] = field.clone();
+        }
+        thread(fields)
+    }
+
+    fn index(threads: Vec<Thread>) -> Threads {
+        threads
+            .into_iter()
+            .map(|thread| (thread.id.clone(), Arc::new(thread)))
+            .collect()
+    }
+
     #[test]
     fn subagent_approvals_bubble_up_to_the_top_thread() {
-        let child = |id: &str, parent: &str, extra: Value| {
-            let mut fields = json!({"id": id,
-                "lineage": {"parentThreadId": parent, "relationshipToParent": "subagent"}});
-            for (key, field) in extra.as_object().unwrap() {
-                fields[key] = field.clone();
-            }
-            thread(fields)
-        };
+        let subagent = json!({"relationshipToParent": "subagent"});
         let approval = request("command");
-        let threads: Threads = [
+        let threads = index(vec![
             thread(json!({"id": "top"})),
-            child("middle", "top", json!({})),
+            child("middle", "top", subagent.clone(), json!({})),
             child(
                 "leaf",
                 "middle",
+                subagent.clone(),
                 json!({"status": "running", "pendingRuntimeRequest": approval}),
             ),
             thread(json!({"id": "other"})),
             child(
                 "native",
                 "other",
+                subagent.clone(),
                 json!({"status": "running", "creationSource": "provider",
                        "pendingRuntimeRequest": approval}),
             ),
             child(
                 "stopped",
                 "other",
+                subagent.clone(),
                 json!({"status": "running", "activityRunStatus": null,
                        "pendingRuntimeRequest": approval}),
             ),
-        ]
-        .into_iter()
-        .map(|thread| (thread.id.clone(), Arc::new(thread)))
-        .collect();
+            child(
+                "asks",
+                "other",
+                subagent,
+                json!({"status": "running", "pendingRuntimeRequest": request("user_input")}),
+            ),
+        ]);
 
-        assert_eq!(approval_parents(&threads), HashSet::from(["middle", "top"]));
-        assert_eq!(classify(&threads["top"], true), Status::Approval);
+        let requests = child_requests(&threads);
+        assert_eq!(
+            requests,
+            HashMap::from([("middle", Status::Approval), ("top", Status::Approval)])
+        );
+        assert_eq!(
+            classify(&threads["top"], requests.get("top").copied()),
+            Status::Approval
+        );
+    }
+
+    #[test]
+    fn side_chats_ask_through_their_parent() {
+        let side_chat = json!({"relationshipToParent": "fork", "sideChat": true});
+        let threads = index(vec![
+            thread(json!({"id": "asked", "settledOverride": "settled"})),
+            child(
+                "question",
+                "asked",
+                side_chat.clone(),
+                json!({"pendingRuntimeRequest": request("user_input")}),
+            ),
+            thread(json!({"id": "approve"})),
+            child(
+                "command",
+                "approve",
+                side_chat.clone(),
+                json!({"pendingRuntimeRequest": request("command")}),
+            ),
+            child(
+                "other-question",
+                "approve",
+                side_chat.clone(),
+                json!({"pendingRuntimeRequest": request("user_input")}),
+            ),
+            thread(json!({"id": "quiet"})),
+            child("idle", "quiet", side_chat.clone(), json!({})),
+            child(
+                "refresh",
+                "quiet",
+                side_chat,
+                json!({"pendingRuntimeRequest": request("auth_refresh")}),
+            ),
+        ]);
+
+        let requests = child_requests(&threads);
+        assert_eq!(
+            requests,
+            HashMap::from([("asked", Status::Input), ("approve", Status::Approval)])
+        );
+        let now = "2030-01-01T12:00:00Z".parse().unwrap();
+        let asked = &threads["asked"];
+        assert!(is_relevant(asked, now, requests.get("asked").copied()));
+        assert_eq!(classify(asked, Some(Status::Input)), Status::Input);
+        assert!(!is_relevant(&threads["question"], now, None));
     }
 }

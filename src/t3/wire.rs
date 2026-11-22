@@ -55,6 +55,8 @@ pub struct Thread {
 pub struct Lineage {
     pub parent_thread_id: Option<String>,
     pub relationship_to_parent: Option<String>,
+    /// A side chat is a fork that T3 shows inside its parent, not in the sidebar.
+    pub side_chat: Option<bool>,
 }
 
 #[derive(Deserialize)]
