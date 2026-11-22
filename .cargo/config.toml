@@ -1,0 +1,3 @@
+# Windows builds use Rust gnullvm + llvm-mingw, so no Visual Studio is needed.
+[target.x86_64-pc-windows-gnullvm]
+linker = "x86_64-w64-mingw32-clang"

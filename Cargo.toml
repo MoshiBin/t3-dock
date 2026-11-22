@@ -1,0 +1,22 @@
+[package]
+name = "t3-dock"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+description = "Shows T3 Code agent threads on a MiraBox N3 and focuses one on key press"
+publish = false
+
+# Only the probe uses these so far. Move each to [dependencies] when the app starts using it.
+[dev-dependencies]
+cosmic-text = "0.19"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png"] }
+mirajazz = "0.16.3"
+tokio = { version = "1", features = ["full"] }
+
+[profile.release]
+lto = "thin"
+strip = true
+
+[lints.cargo]
+# The probe's dev-dependencies look unused to the empty unit-test target. Remove once src/ uses them.
+unused_dependencies = "allow"
