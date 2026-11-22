@@ -1,6 +1,7 @@
 //! Every Win32 call, so the unsafe code stays in one place.
 
 use std::ptr::{null, null_mut};
+use std::time::Duration;
 
 use windows_sys::Win32::Foundation::{
     CloseHandle, ERROR_ALREADY_EXISTS, GetLastError, HANDLE, HWND, LPARAM, LocalFree, RECT,
@@ -8,6 +9,10 @@ use windows_sys::Win32::Foundation::{
 };
 use windows_sys::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+};
+use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+use windows_sys::Win32::System::Registry::{
+    HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
 use windows_sys::Win32::System::Threading::{
     AttachThreadInput, CreateEventW, EVENT_MODIFY_STATE, GetCurrentThreadId, OpenEventW,
@@ -18,10 +23,11 @@ use windows_sys::Win32::UI::Shell::{
     ASSOCF_NONE, ASSOCSTR_EXECUTABLE, AssocQueryStringW, ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetForegroundWindow, GetWindow,
-    GetWindowLongW, GetWindowPlacement, GetWindowThreadProcessId, IsHungAppWindow, IsIconic,
-    IsWindowVisible, MSG, PM_NOREMOVE, PeekMessageW, SW_RESTORE, SW_SHOWNORMAL,
-    SetForegroundWindow, ShowWindowAsync, WINDOWPLACEMENT, WS_EX_TOOLWINDOW,
+    BringWindowToTop, DispatchMessageW, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetForegroundWindow,
+    GetWindow, GetWindowLongW, GetWindowPlacement, GetWindowThreadProcessId, IsHungAppWindow,
+    IsIconic, IsWindowVisible, MSG, MsgWaitForMultipleObjects, PM_NOREMOVE, PM_REMOVE,
+    PeekMessageW, QS_ALLINPUT, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindowAsync,
+    TranslateMessage, WINDOWPLACEMENT, WS_EX_TOOLWINDOW,
 };
 use windows_sys::core::BOOL;
 
@@ -287,9 +293,91 @@ impl Window {
     }
 }
 
+/// The exe has no console of its own, so subcommands borrow the caller's to print.
+pub fn attach_parent_console() {
+    // SAFETY: takes no pointers. It fails harmlessly when there is no console to attach to.
+    unsafe {
+        AttachConsole(ATTACH_PARENT_PROCESS);
+    }
+}
+
+/// Waits up to `limit` for window messages, then dispatches all of them.
+pub fn pump_messages(limit: Duration) {
+    // SAFETY: waits on no handles, and `message` is valid for each call.
+    unsafe {
+        MsgWaitForMultipleObjects(0, null(), 0, limit.as_millis() as u32, QS_ALLINPUT);
+        let mut message = MSG::default();
+        while PeekMessageW(&mut message, null_mut(), 0, 0, PM_REMOVE) != 0 {
+            TranslateMessage(&message);
+            DispatchMessageW(&message);
+        }
+    }
+}
+
+/// Reads a string value under HKEY_CURRENT_USER.
+pub fn registry_string(key: &str, name: &str) -> Option<String> {
+    let (key, name) = (wide(key), wide(name));
+    let mut buffer = [0u16; 1024];
+    let mut bytes = size_of_val(&buffer) as u32;
+    // SAFETY: the strings are NUL-terminated and the buffer is writable for `bytes` bytes.
+    let result = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            RRF_RT_REG_SZ,
+            null_mut(),
+            buffer.as_mut_ptr().cast(),
+            &mut bytes,
+        )
+    };
+    let characters = (bytes as usize / 2).checked_sub(1)?;
+    (result == 0).then(|| String::from_utf16_lossy(&buffer[..characters]))
+}
+
+/// Writes a string value under HKEY_CURRENT_USER.
+pub fn set_registry_string(key: &str, name: &str, value: &str) -> bool {
+    let (key, name, value) = (wide(key), wide(name), wide(value));
+    // SAFETY: the strings are NUL-terminated and the size is that of `value` in bytes.
+    unsafe {
+        RegSetKeyValueW(
+            HKEY_CURRENT_USER,
+            key.as_ptr(),
+            name.as_ptr(),
+            REG_SZ,
+            value.as_ptr().cast(),
+            size_of_val(value.as_slice()) as u32,
+        ) == 0
+    }
+}
+
+pub fn delete_registry_value(key: &str, name: &str) -> bool {
+    let (key, name) = (wide(key), wide(name));
+    // SAFETY: both strings are NUL-terminated.
+    unsafe { RegDeleteKeyValueW(HKEY_CURRENT_USER, key.as_ptr(), name.as_ptr()) == 0 }
+}
+
 #[cfg(test)]
 mod tests {
     use super::{protect, unprotect};
+
+    #[test]
+    fn registry_round_trip() {
+        use windows_sys::Win32::System::Registry::{HKEY_CURRENT_USER, RegDeleteKeyW};
+
+        // A key of the test's own, never the real Run key.
+        let key = format!(r"Software\t3-dock-test-{}", std::process::id());
+        let value = r#""C:\Invented path\t3-dock.exe""#;
+        assert_eq!(super::registry_string(&key, "name"), None);
+        assert!(super::set_registry_string(&key, "name", value));
+        assert_eq!(super::registry_string(&key, "name").as_deref(), Some(value));
+        assert!(super::delete_registry_value(&key, "name"));
+        assert_eq!(super::registry_string(&key, "name"), None);
+        // SAFETY: deletes only the now empty key created above.
+        unsafe {
+            RegDeleteKeyW(HKEY_CURRENT_USER, super::wide(&key).as_ptr());
+        }
+    }
 
     #[test]
     fn dpapi_round_trip() {

@@ -30,6 +30,16 @@ See T3 Code agents on the N3's screen keys. Press one to focus that agent's thre
 - The left dial reported twice for each requested click, in both directions. The other dials reported
   once. It is unknown whether that is the dial or the hand.
 
+### Exercised by the user on the hardware, 2026-11-22 (milestones 2-4)
+
+The user approved the result as a whole. These are the parts the log shows being used:
+
+- Six live keys, paging with the buttons, and scrolling with the top dial.
+- Project filter, project names while held, and turning the brightness dial. Deliberate single turns
+  of that dial reported once this time.
+- Focus as it is now: from behind another window T3 was in front after 64 and 295 ms, with no retries.
+- No HID disconnects during the session.
+
 ### Tested from the host side
 
 - User-scope toolchain: rustup stable gnullvm (1.100.0) and winget llvm-mingw.
@@ -38,14 +48,18 @@ See T3 Code agents on the N3's screen keys. Press one to focus that agent's thre
 - Recovery from a T3 restart on another port and from a rejected token, against a stand-in server
   (`src/t3/recovery_tests.rs`).
 - HID reads survive redraws: 8 of 8 runs, against 2 of 3 failing before the fix (see the traps).
-- Single instance, graceful stop, and starting with T3 unreachable.
+- Single instance, graceful stop, starting with T3 unreachable, the GUI subsystem, subcommand output,
+  and the tray icon registering with Explorer.
 
 ## Not yet tested
 
-- Milestones 2-3 by eye and hand: six live keys, buttons, dials and brightness.
-- Focus as it is now (raise first, then link), and navigation to thread ids that contain `:`.
+- The needs-you button with a thread actually waiting. It was pressed only while none was.
+- Pressing the top dial away from home, and pressing the bottom-left dial.
+- Focus with T3 minimized since it raises first. Navigation to thread ids that contain `:` was not
+  confirmed separately.
+- The tray menu by hand, start at login (only its registry helpers, on a test key) and renewing a
+  token from the tray.
 - A real T3 restart, USB replug, and sleep and resume.
-- The tray icon (it compiles, nothing more).
 
 ## Hardware
 

@@ -359,7 +359,7 @@ impl App {
             Phase::Live => None,
             Phase::Connecting => Some(Tile::notice("T3", "Connecting")),
             Phase::Offline => Some(Tile::notice("OFFLINE", "T3 Code not reachable")),
-            Phase::NeedsToken => Some(Tile::notice("NO TOKEN", "Run t3-dock auth")),
+            Phase::NeedsToken => Some(Tile::notice("NO TOKEN", "Use the tray menu")),
             Phase::Unsupported => Some(Tile::notice("T3", "Unsupported T3 version")),
         }
     }

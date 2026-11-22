@@ -32,6 +32,7 @@ const RETRY: Duration = Duration::from_secs(3);
 
 pub enum Message {
     Input(input::Event),
+    Connected,
     Disconnected,
 }
 
@@ -121,6 +122,7 @@ async fn session(
     let mut generation = first.generation;
     let mut brightness = first.brightness;
     log!("device: connected, {SCREEN_KEYS} key images sent");
+    let _ = messages.send(Message::Connected).await;
 
     // Raw reports, because mirajazz's decoded states lose other keys that are held.
     let reader = device.get_reader(|_, _| Ok(DeviceInput::NoData));

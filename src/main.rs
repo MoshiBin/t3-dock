@@ -1,3 +1,6 @@
+// No console window. Tests keep theirs.
+#![cfg_attr(not(test), windows_subsystem = "windows")]
+
 mod app;
 mod board;
 mod device;
@@ -7,8 +10,10 @@ mod log;
 mod render;
 mod status;
 mod t3;
+mod tray;
 mod win;
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::time::{Duration, Instant, SystemTime};
@@ -77,8 +82,13 @@ fn main() -> ExitCode {
     clean_environment();
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
-    let Some(cli) = parse(&args) else {
-        eprintln!("{USAGE}");
+    let cli = parse(&args);
+    if !matches!(cli, Some(Cli::Run)) {
+        win::attach_parent_console();
+    }
+    let Some(cli) = cli else {
+        // Not eprintln!, which panics when there is nowhere to print.
+        let _ = writeln!(std::io::stderr(), "{USAGE}");
         return ExitCode::from(2);
     };
     match execute(cli) {
@@ -154,7 +164,10 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     let (message_tx, mut messages) = mpsc::channel(64);
     let (view_tx, mut views) = watch::channel(t3::View::default());
     let device = device::start(screen_rx, message_tx)?;
+    let tray = tray::Tray::start(t3_home.clone(), data.clone());
     let client = tokio::spawn(t3::run(t3_home, data, view_tx));
+    let (mut phase, mut n3_connected) = (t3::Phase::Connecting, false);
+    let mut tray_text = String::new();
 
     // One worker, so presses cannot race each other. The newest press wins.
     let (focus_tx, focus_rx) = std::sync::mpsc::channel::<app::Target>();
@@ -169,13 +182,11 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
 
     let mut stop_poll = interval(Duration::from_millis(250));
     let mut clock = interval(Duration::from_secs(30));
-    let mut ctrl_c = std::pin::pin!(tokio::signal::ctrl_c());
     let mut summary = app.summary();
     let mut last_tick = SystemTime::now();
 
     let result = loop {
         tokio::select! {
-            _ = &mut ctrl_c => break Ok(()),
             _ = stop_poll.tick() => {
                 if instance.stop_requested() {
                     break Ok(());
@@ -203,11 +214,17 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                 if changed.is_err() {
                     break Err("the T3 client stopped".to_owned());
                 }
-                app.update(views.borrow_and_update().clone(), Timestamp::now());
+                let view = views.borrow_and_update().clone();
+                phase = view.phase;
+                app.update(view, Timestamp::now());
             }
             message = messages.recv() => match message {
                 None => break Err("the device task stopped".to_owned()),
-                Some(device::Message::Disconnected) => app.release_all(),
+                Some(device::Message::Connected) => n3_connected = true,
+                Some(device::Message::Disconnected) => {
+                    n3_connected = false;
+                    app.release_all();
+                }
                 Some(device::Message::Input(event)) => {
                     log!("input: {event}");
                     if let Some(target) = app.input(event.action, Instant::now())
@@ -222,6 +239,11 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
         if now_showing != summary {
             summary = now_showing;
             log!("{summary}");
+        }
+        let text = tray_status(phase, n3_connected);
+        if text != tray_text {
+            tray.set_status(text.clone());
+            tray_text = text;
         }
         let screen = app.screen();
         screen_tx.send_if_modified(|shown| {
@@ -238,8 +260,25 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     if timeout(Duration::from_secs(5), device).await.is_err() {
         log!("app: the device did not close in time");
     }
+    tray.close();
     log!("app: stopped");
     result
+}
+
+fn tray_status(phase: t3::Phase, n3_connected: bool) -> String {
+    let t3 = match phase {
+        t3::Phase::Connecting => "connecting",
+        t3::Phase::Live => "connected",
+        t3::Phase::Offline => "not reachable",
+        t3::Phase::NeedsToken => "needs a token",
+        t3::Phase::Unsupported => "unsupported version",
+    };
+    let n3 = if n3_connected {
+        "connected"
+    } else {
+        "not connected"
+    };
+    format!("T3 {t3}, N3 {n3}")
 }
 
 #[cfg(test)]

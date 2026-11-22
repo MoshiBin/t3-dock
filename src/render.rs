@@ -278,7 +278,7 @@ mod tests {
                 "A very long invented title that cannot possibly fit on one small key",
                 Status::Failed,
             ),
-            Tile::notice("NO TOKEN", "Run t3-dock auth"),
+            Tile::notice("NO TOKEN", "Use the tray menu"),
             pressed,
         ];
         let mut renderer = Renderer::new();
