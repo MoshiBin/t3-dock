@@ -19,6 +19,9 @@ use windows_sys::Win32::System::Threading::{
     OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, SetEvent,
     WaitForSingleObject,
 };
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    INPUT, INPUT_0, INPUT_KEYBOARD, KEYBDINPUT, KEYEVENTF_KEYUP, SendInput, VIRTUAL_KEY,
+};
 use windows_sys::Win32::UI::Shell::{
     ASSOCF_NONE, ASSOCSTR_EXECUTABLE, AssocQueryStringW, ShellExecuteW,
 };
@@ -291,6 +294,33 @@ impl Window {
             accepted
         }
     }
+}
+
+/// Presses `keys` in order and releases them in reverse, as one batch that other input cannot
+/// split. It goes to whatever window is in front, so check that first.
+pub fn send_chord(keys: &[VIRTUAL_KEY]) -> bool {
+    let key = |vk, flags| INPUT {
+        r#type: INPUT_KEYBOARD,
+        Anonymous: INPUT_0 {
+            ki: KEYBDINPUT {
+                wVk: vk,
+                wScan: 0,
+                dwFlags: flags,
+                time: 0,
+                dwExtraInfo: 0,
+            },
+        },
+    };
+    let inputs: Vec<INPUT> = keys
+        .iter()
+        .map(|&vk| key(vk, 0))
+        .chain(keys.iter().rev().map(|&vk| key(vk, KEYEVENTF_KEYUP)))
+        .collect();
+    let Ok(count) = u32::try_from(inputs.len()) else {
+        return false;
+    };
+    // SAFETY: `inputs` holds `count` initialized entries of the size passed.
+    unsafe { SendInput(count, inputs.as_ptr(), size_of::<INPUT>() as i32) == count }
 }
 
 /// The exe has no console of its own, so subcommands borrow the caller's to print.
