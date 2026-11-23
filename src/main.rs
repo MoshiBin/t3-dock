@@ -170,13 +170,16 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     let mut tray_text = String::new();
 
     // One worker, so presses cannot race each other. The newest press wins.
-    let (focus_tx, focus_rx) = std::sync::mpsc::channel::<app::Target>();
+    let (focus_tx, focus_rx) = std::sync::mpsc::channel::<app::Command>();
     std::thread::spawn(move || {
-        while let Ok(mut target) = focus_rx.recv() {
+        while let Ok(mut command) = focus_rx.recv() {
             while let Ok(newer) = focus_rx.try_recv() {
-                target = newer;
+                command = newer;
             }
-            focus::open(&target);
+            match command {
+                app::Command::Open(target) => focus::open(&target),
+                app::Command::Send(shortcut) => focus::send(shortcut),
+            }
         }
     });
 
@@ -227,8 +230,8 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                 }
                 Some(device::Message::Input(event)) => {
                     log!("input: {event}");
-                    if let Some(target) = app.input(event.action, Instant::now())
-                        && focus_tx.send(target).is_err()
+                    if let Some(command) = app.input(event.action, Instant::now())
+                        && focus_tx.send(command).is_err()
                     {
                         log!("focus: worker stopped");
                     }

@@ -34,7 +34,8 @@ See T3 Code agents on the N3's screen keys. Press one to focus that agent's thre
 
 The user approved the result as a whole. These are the parts the log shows being used:
 
-- Six live keys, paging with the buttons, and scrolling with the top dial.
+- Six live keys, paging with the buttons (since replaced by new and settle), and scrolling with the
+  top dial.
 - Project filter, project names while held, and turning the brightness dial. Deliberate single turns
   of that dial reported once this time.
 - Focus as it is now: from behind another window T3 was in front after 64 and 295 ms, with no retries.
@@ -53,6 +54,7 @@ The user approved the result as a whole. These are the parts the log shows being
 
 ## Not yet tested
 
+- The new-thread and settle buttons. Not yet pressed on the hardware.
 - The needs-you button with a thread actually waiting. It was pressed only while none was.
 - Pressing the top dial away from home, and pressing the bottom-left dial.
 - Focus with T3 minimized since it raises first. Navigation to thread ids that contain `:` was not
@@ -206,6 +208,11 @@ Found while building:
   the user pressed again while waiting. So `src/focus.rs` raises first (`AttachThreadInput` +
   `SetForegroundWindow`), then opens the link, then retries until T3 is in front. One of the two
   measured raise calls returned false, hence the retries.
+- New thread and settle have no link, and the token is read-only, so they are T3's default
+  shortcuts from the 0.1.11 bundle: `mod+n` is `chat.new` and `mod+shift+s` is `thread.settle`
+  (toggles), both `when: !terminalFocus`. `t3code://new` needs a `prompt` and asks to confirm, so it
+  can't make an empty thread. `src/focus.rs` sends the keys with `SendInput` only after checking that
+  T3 is in front, and settle only if T3 was in front before the press.
 - `lastVisitedAt` did not change when a press opened an already read thread, so it can't confirm
   navigation.
 - The link launches a second T3 process with our environment. Inside a T3 agent shell that has
@@ -218,7 +225,7 @@ Found while building:
     +--------+--------+--------+  amber needs you or woke, blue working, green done, red failed
     | agent  | agent  | agent  |  press = focus that thread
     +--------+--------+--------+
-     [prev]  [needs you]  [next]
+      [new]  [needs you]  [settle]
      dials: top = scroll, bottom-left = brightness, bottom-right = filter by project
 
 - A thread keeps its key while active, so nothing moves under the user's finger.

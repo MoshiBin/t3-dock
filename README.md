@@ -28,7 +28,7 @@ Close MiraBox's own app, then start `t3-dock.exe`. It has no window, only a tray
     +--------+--------+--------+
     | thread | thread | thread |
     +--------+--------+--------+
-     [prev]  [needs you]  [next]
+      [new]  [needs you]  [settle]
 
 | Control | Turn | Press |
 |---|---|---|
@@ -36,7 +36,15 @@ Close MiraBox's own app, then start `t3-dock.exe`. It has no window, only a tray
 | Bottom-left dial | Brightness | Reset brightness to 60% |
 | Bottom-right dial | Show one project's threads | Show project names while held |
 
-The middle key under the screens opens the next thread that needs you, from any project or page.
+The keys under the screens:
+
+- **New** opens a new thread in the project T3 has open (T3's Ctrl+N).
+- **Needs you** opens the next thread that needs you, from any project or page.
+- **Settle** settles the thread T3 shows, or unsettles it if it is settled (T3's Ctrl+Shift+S). If T3
+  is not in front, the first press only brings it forward, so you can see which thread it would settle.
+
+New and settle press T3's default shortcuts, so they don't work if you changed those, or while T3's
+terminal has focus. They are typed only while T3 is in front.
 
 | Color | Meaning |
 |---|---|
