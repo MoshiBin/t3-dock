@@ -212,6 +212,8 @@ impl Settings {
                 .clicked()
             {
                 self.draft = Config::default();
+                // Off by default, like the tray item.
+                self.login_draft = false;
             }
             ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
                 let dirty = self.dirty();
