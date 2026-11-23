@@ -26,11 +26,12 @@ use windows_sys::Win32::UI::Shell::{
     ASSOCF_NONE, ASSOCSTR_EXECUTABLE, AssocQueryStringW, ShellExecuteW,
 };
 use windows_sys::Win32::UI::WindowsAndMessaging::{
-    BringWindowToTop, DispatchMessageW, EnumWindows, GW_OWNER, GWL_EXSTYLE, GetForegroundWindow,
-    GetWindow, GetWindowLongW, GetWindowPlacement, GetWindowThreadProcessId, IsHungAppWindow,
-    IsIconic, IsWindowVisible, MSG, MsgWaitForMultipleObjects, PM_NOREMOVE, PM_REMOVE,
-    PeekMessageW, QS_ALLINPUT, SW_RESTORE, SW_SHOWNORMAL, SetForegroundWindow, ShowWindowAsync,
-    TranslateMessage, WINDOWPLACEMENT, WS_EX_TOOLWINDOW,
+    ASFW_ANY, AllowSetForegroundWindow, BringWindowToTop, DispatchMessageW, EnumWindows, GW_OWNER,
+    GWL_EXSTYLE, GetForegroundWindow, GetWindow, GetWindowLongW, GetWindowPlacement,
+    GetWindowThreadProcessId, IsHungAppWindow, IsIconic, IsWindowVisible, MSG,
+    MsgWaitForMultipleObjects, PM_NOREMOVE, PM_REMOVE, PeekMessageW, QS_ALLINPUT, SW_RESTORE,
+    SW_SHOWNORMAL, SetForegroundWindow, ShowWindowAsync, TranslateMessage, WINDOWPLACEMENT,
+    WS_EX_TOOLWINDOW,
 };
 use windows_sys::core::BOOL;
 
@@ -99,7 +100,12 @@ pub struct Instance(HANDLE);
 impl Instance {
     /// `None` when another instance runs, or the event cannot be created.
     pub fn claim() -> Option<Self> {
-        let name = wide(STOP_EVENT);
+        Self::claim_named(STOP_EVENT)
+    }
+
+    /// The same for another named event, such as the settings window's.
+    pub fn claim_named(name: &str) -> Option<Self> {
+        let name = wide(name);
         // SAFETY: the name is NUL-terminated and the handle is owned by `Instance`.
         unsafe {
             let handle = CreateEventW(null(), 1, 0, name.as_ptr());
@@ -126,6 +132,20 @@ impl Drop for Instance {
         unsafe {
             CloseHandle(self.0);
         }
+    }
+}
+
+/// Whether the dock is running, without asking it to stop.
+pub fn is_running() -> bool {
+    let name = wide(STOP_EVENT);
+    // SAFETY: the name is NUL-terminated and the handle is closed here.
+    unsafe {
+        let handle = OpenEventW(EVENT_MODIFY_STATE, 0, name.as_ptr());
+        if handle.is_null() {
+            return false;
+        }
+        CloseHandle(handle);
+        true
     }
 }
 
@@ -321,6 +341,15 @@ pub fn send_chord(keys: &[VIRTUAL_KEY]) -> bool {
     };
     // SAFETY: `inputs` holds `count` initialized entries of the size passed.
     unsafe { SendInput(count, inputs.as_ptr(), size_of::<INPUT>() as i32) == count }
+}
+
+/// Lets a process this one starts next take the foreground, as a click on the tray menu entitles
+/// this one to.
+pub fn allow_foreground() {
+    // SAFETY: takes no pointers. Failing only means the other window may stay behind.
+    unsafe {
+        AllowSetForegroundWindow(ASFW_ANY);
+    }
 }
 
 /// The exe has no console of its own, so subcommands borrow the caller's to print.

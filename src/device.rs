@@ -237,7 +237,7 @@ mod tests {
             .unwrap();
         let (screens, screen) = watch::channel(Screen {
             tiles: std::array::from_fn(|key| Tile::numbered(key + 1)),
-            brightness: crate::app::DEFAULT_BRIGHTNESS,
+            brightness: crate::config::Preferences::default().default_brightness,
             generation: 0,
         });
         let (messages, _inputs) = mpsc::channel(64);

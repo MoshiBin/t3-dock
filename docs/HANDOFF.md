@@ -61,6 +61,11 @@ The user approved the result as a whole. These are the parts the log shows being
   confirmed separately.
 - The tray menu by hand, start at login (only its registry helpers, on a test key) and renewing a
   token from the tray.
+- Rebound controls on the hardware, and the running dock reloading `config.json`. The settings
+  window itself was driven by synthetic clicks against a scratch data folder: rebinding, saving,
+  the unsaved-changes prompt and single instance. Raising an already open settings window was
+  refused by the foreground lock when started from a shell; the tray grants foreground first, which
+  is untested.
 - A real T3 restart, USB replug, and sleep and resume.
 
 ## Hardware
@@ -199,6 +204,17 @@ Found while building:
   approval or question shows on its direct parent, even a settled one.
 - The title fills a key, so the project shows while the bottom-right dial is held.
 - Keys move only at home (`src/board.rs`). A page the user scrolled to is frozen.
+- The three keys and the dials are bindings, the layout above being the default (`src/config.rs`).
+  Screen keys are not rebindable.
+
+## Settings
+
+- `t3-dock settings` is a separate process with an egui (glow) window, started from the tray. winit
+  allows one event loop per process, and the dock's tray thread already runs a message loop.
+- It writes `config.json` (temporary file, then rename) and start at login. The dock checks the
+  file's modified time every 250 ms and applies it with `App::set_config`. Unknown or missing
+  fields fall back to the defaults, and numbers are clamped.
+- `Local\t3-dock-settings` keeps one window. `config.json` holds no ids, titles or secrets.
 
 ## Milestones
 
