@@ -53,7 +53,7 @@ them. Subagents fold into their parent.
 The tray menu shows the connection state, sets up or renews the token, opens the log, turns start at
 login on or off (off by default) and quits. The same exe has two subcommands:
 
-    t3-dock auth    create or check the T3 token
+    t3-dock auth    create or check the T3 tokens
     t3-dock stop    stop the running instance and blank the keys
 
 It is a GUI program, so PowerShell doesn't wait for it. Add `| Out-Host` to wait.
@@ -62,6 +62,21 @@ It is a GUI program, so PowerShell doesn't wait for it. Add `| Out-Host` to wait
 `t3-dock`, and save it encrypted for your Windows user (DPAPI). That scope can also read files and
 thread contents, so t3-dock sends it only to loopback. Revoke it in T3 Code under Settings >
 Connections. A working token is kept, so renewing does something only once it has expired.
+
+### Remote environments
+
+Threads from every remote environment that T3 Code's desktop client has saved over SSH show up
+too, mixed in with local ones. A press opens the thread in its own environment. Holding the
+bottom-right dial shows the environment's label after the project name.
+
+t3-dock reads the list from the client's encrypted connection catalog, taking only the SSH targets
+and never the client's own credentials. It then joins the T3 server that the client already runs
+on each host. It never starts or stops a remote server. Each remote needs a token of its own, so
+`auth` and the tray item also run the remote's T3 CLI over SSH. That issues the same
+`orchestration:read` token, which then reaches the server only through an SSH port forward to its
+loopback port. SSH runs with `BatchMode=yes`, so key or agent login must work, as it does for the
+client. Remotes saved over a relay or a direct URL are skipped. The tray shows how many remotes are
+connected.
 
 The log is `%LOCALAPPDATA%\t3-dock\t3-dock.log`. It has input codes, states and counts, and no titles,
 ids, tokens or message text.

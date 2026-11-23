@@ -165,8 +165,8 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     let (view_tx, mut views) = watch::channel(t3::View::default());
     let device = device::start(screen_rx, message_tx)?;
     let tray = tray::Tray::start(t3_home.clone(), data.clone());
-    let client = tokio::spawn(t3::run(t3_home, data, view_tx));
-    let (mut phase, mut n3_connected) = (t3::Phase::Connecting, false);
+    let client = tokio::spawn(t3::run_all(t3_home, data, view_tx));
+    let (mut health, mut n3_connected) = (t3::Health::default(), false);
     let mut tray_text = String::new();
 
     // One worker, so presses cannot race each other. The newest press wins.
@@ -215,7 +215,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                     break Err("the T3 client stopped".to_owned());
                 }
                 let view = views.borrow_and_update().clone();
-                phase = view.phase;
+                health = view.health.clone();
                 app.update(view, Timestamp::now());
             }
             message = messages.recv() => match message {
@@ -240,7 +240,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
             summary = now_showing;
             log!("{summary}");
         }
-        let text = tray_status(phase, n3_connected);
+        let text = tray_status(&health, n3_connected);
         if text != tray_text {
             tray.set_status(text.clone());
             tray_text = text;
@@ -265,20 +265,43 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     result
 }
 
-fn tray_status(phase: t3::Phase, n3_connected: bool) -> String {
-    let t3 = match phase {
+fn phase_text(phase: t3::Phase) -> &'static str {
+    match phase {
         t3::Phase::Connecting => "connecting",
         t3::Phase::Live => "connected",
         t3::Phase::Offline => "not reachable",
         t3::Phase::NeedsToken => "needs a token",
         t3::Phase::Unsupported => "unsupported version",
-    };
+    }
+}
+
+fn tray_status(health: &t3::Health, n3_connected: bool) -> String {
     let n3 = if n3_connected {
         "connected"
     } else {
         "not connected"
     };
-    format!("T3 {t3}, N3 {n3}")
+    let mut text = format!("T3 {}", phase_text(health.local));
+    if !health.remotes.is_empty() {
+        let live = health
+            .remotes
+            .iter()
+            .filter(|phase| **phase == t3::Phase::Live)
+            .count();
+        let tokens = health
+            .remotes
+            .iter()
+            .filter(|phase| **phase == t3::Phase::NeedsToken)
+            .count();
+        text.push_str(&format!(
+            ", remotes {live}/{} connected",
+            health.remotes.len()
+        ));
+        if tokens > 0 {
+            text.push_str(&format!(" ({tokens} need a token)"));
+        }
+    }
+    format!("{text}, N3 {n3}")
 }
 
 #[cfg(test)]

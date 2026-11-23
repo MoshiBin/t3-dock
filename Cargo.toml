@@ -7,6 +7,8 @@ description = "Shows T3 Code agent threads on a MiraBox N3 and focuses one on ke
 publish = false
 
 [dependencies]
+aes-gcm = { version = "0.10", default-features = false, features = ["aes", "alloc"] }
+base64 = "0.22"
 cosmic-text = "0.19"
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
@@ -19,6 +21,7 @@ tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 tray-icon = { version = "0.26", default-features = false }
 ureq = { version = "3", default-features = false }
+zeroize = "1"
 
 [dependencies.windows-sys]
 version = "0.61"
@@ -27,6 +30,7 @@ features = [
     "Win32_Security",
     "Win32_Security_Cryptography",
     "Win32_System_Console",
+    "Win32_System_JobObjects",
     "Win32_System_Registry",
     "Win32_System_Threading",
     "Win32_UI_Shell",

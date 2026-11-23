@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer};
 pub const PROTOCOL: u64 = 2;
 pub const REQUEST_ID: &str = "shell";
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
@@ -50,7 +50,7 @@ pub struct Thread {
     pub updated_at: Option<String>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lineage {
     pub parent_thread_id: Option<String>,
@@ -59,19 +59,20 @@ pub struct Lineage {
     pub side_chat: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct BackgroundTask {
     pub kind: Option<String>,
     pub awaited: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct RuntimeRequest {
     pub kind: Option<String>,
     pub blocking: Option<bool>,
 }
 
 /// A field whose presence matters but whose content does not.
+#[derive(Clone)]
 pub struct Present;
 
 impl<'de> Deserialize<'de> for Present {

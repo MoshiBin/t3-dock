@@ -155,6 +155,37 @@ refresh with an empty thread list: don't apply it.
 beastyrabbit's `src/status.ts` mirrors the T3 sidebar's rules, including parked runs and subagent
 approvals bubbling up to the parent. It is MIT, so it can be ported with attribution.
 
+## Remote environments
+
+Read from the installed desktop bundle (0.1.12 nightly) and tested against three SSH remotes on
+2026-11-23: all three went live next to the local server, and their threads showed on the keys.
+
+- The desktop client lists them in `~/.t3/userdata/connection-catalog.json`:
+  `{version, encryptedCatalog}`, Electron `safeStorage`. On Windows that is Chromium `os_crypt`:
+  base64 of `v10` + 12-byte nonce + AES-256-GCM ciphertext and tag. The key is
+  `os_crypt.encrypted_key` in `%APPDATA%\t3code-v2\Local State` (then `T3 Code (Alpha)`, `t3code`):
+  base64 of `DPAPI` + a DPAPI blob for the current user.
+- Decrypted: `{schemaVersion, targets, profiles, credentials, remoteDpopTokens, disabledEnvironmentIds}`.
+  `SshConnectionTarget.connectionId` names an `SshConnectionProfile` whose `target` is
+  `{alias, hostname, username, port}`. `src/t3/catalog.rs` reads only those, skips disabled ids, and
+  never deserializes `credentials` (the client's bearer tokens, broader than read-only).
+- The client runs `ssh -o BatchMode=... -- user@alias` (the alias, so `~/.ssh/config` applies) and
+  forwards a random local port with `-L 127.0.0.1:<local>:127.0.0.1:<remote>`. It launches or reuses
+  the remote server through `~/.t3/ssh-launch/<key>/`, and **stops it when it closes the tunnel**. So
+  t3-dock never launches anything: it reads the remote's `~/.t3/userdata/server-runtime.json`,
+  requires a loopback origin, and opens its own forward to that port. With the client closed the
+  remote server is usually gone, and that remote shows as offline.
+- The remote CLI: `~/.t3/bin/t3`, else `t3` on PATH, else the client's `~/.t3/ssh-launch/*/run-t3.sh`.
+  `auth session issue --scope orchestration:read --token-only` works there as it does locally.
+- `/.well-known/t3/environment` through the forward must return the catalog's `environmentId`.
+- Remote thread, parent and project ids are prefixed with `<environmentId>\0` in the merged view
+  (`src/t3/merge.rs`), so ids never collide, subagents still fold, and a press opens
+  `t3code://threads/<remote environmentId>/<threadId>`. The renderer routes every thread by
+  `/$environmentId/$threadId`, whatever its environment.
+- `ssh.exe` children join a kill-on-close job, so no tunnel outlives t3-dock.
+- Not supported: relay and bearer (direct URL) targets. Not tested: a remote whose SSH login needs a
+  password, and pressing a remote thread (expected to work, see above).
+
 ## Focus
 
 Read from the installed desktop bundle, then fired on the hardware:

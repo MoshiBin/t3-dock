@@ -14,7 +14,7 @@ use crate::board::{Board, Entry, NEEDS_USER};
 use crate::input::{Action, Control, Dial, Direction, SCREEN_KEYS};
 use crate::render::Tile;
 use crate::status::{self, Status};
-use crate::t3::{Phase, View};
+use crate::t3::{Phase, View, split_key};
 
 const PREVIOUS: usize = 0;
 const NEEDS_YOU: usize = 1;
@@ -215,10 +215,17 @@ impl App {
         None
     }
 
-    fn target(&self, thread_id: String) -> Target {
-        Target {
-            environment_id: self.view.environment_id.clone(),
-            thread_id,
+    /// A remote thread's key names its environment. Any other thread is local.
+    fn target(&self, key: String) -> Target {
+        match split_key(&key) {
+            Some((environment, thread)) => Target {
+                environment_id: environment.to_owned(),
+                thread_id: thread.to_owned(),
+            },
+            None => Target {
+                environment_id: self.view.environment_id.clone(),
+                thread_id: key,
+            },
         }
     }
 
@@ -421,6 +428,7 @@ mod tests {
                 ("p1".to_owned(), "Alpha".to_owned()),
                 ("p2".to_owned(), "Beta".to_owned()),
             ])),
+            health: Default::default(),
         }
     }
 
@@ -492,6 +500,22 @@ mod tests {
             json!({"id": "archived", "archivedAt": "2030-01-01T00:00:00Z"}),
         ]);
         assert_eq!(press(&mut app, 0), None);
+    }
+
+    #[test]
+    fn a_remote_thread_opens_in_its_own_environment() {
+        let key = crate::t3::merge_key_for_tests("env-remote", "thread:r");
+        let mut app = app_with(&[working(&key), working("local")]);
+        let targets: Vec<(String, String)> = (0..2)
+            .filter_map(|position| {
+                let id = app.thread_on(position)?.to_owned();
+                let target = app.target(id);
+                Some((target.environment_id, target.thread_id))
+            })
+            .collect();
+        assert!(targets.contains(&("env-remote".into(), "thread:r".into())));
+        assert!(targets.contains(&("env-invented".into(), "local".into())));
+        assert!(press(&mut app, 0).is_some());
     }
 
     #[test]
