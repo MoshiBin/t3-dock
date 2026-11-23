@@ -8,6 +8,8 @@ publish = false
 
 [dependencies]
 cosmic-text = "0.19"
+# The settings window only. glow, not wgpu, to keep the exe small.
+eframe = { version = "0.37", default-features = false, features = ["accesskit", "default_fonts", "glow"] }
 futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
 image = { version = "0.25", default-features = false, features = ["jpeg"] }
 jiff = "1"

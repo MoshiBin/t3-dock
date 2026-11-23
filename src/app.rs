@@ -1,9 +1,10 @@
 //! What the keys show and what the controls do.
 //!
-//! The keys without screens open a new thread, open the next thread that needs the user, and
-//! settle the thread T3 shows.
-//! The top dial scrolls a row and goes home when pressed. The left dial sets the brightness and
-//! resets it when pressed. The right dial picks a project and shows project names while held.
+//! Screen keys open their thread. The other keys and the dials do what the user's bindings say
+//! (`config.rs`). By default the keys without screens open a new thread, open the next thread
+//! that needs the user, and settle the thread T3 shows. The top dial scrolls a row and goes home
+//! when pressed. The left dial sets the brightness and resets it when pressed. The right dial
+//! picks a project and shows project names while held.
 
 use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
@@ -12,22 +13,16 @@ use std::time::{Duration, Instant};
 use jiff::Timestamp;
 
 use crate::board::{Board, Entry, NEEDS_USER};
+use crate::config::{self, Config, Press, Turn};
 use crate::focus::Shortcut;
-use crate::input::{Action, Control, Dial, Direction, SCREEN_KEYS};
+use crate::input::{Action, Control, Direction, SCREEN_KEYS};
 use crate::render::Tile;
 use crate::status::{self, Status};
 use crate::t3::{Phase, View};
 
-const NEW_THREAD: usize = 0;
-const NEEDS_YOU: usize = 1;
-const SETTLE: usize = 2;
-
 const ROW: usize = 3;
-const MESSAGE_TIME: Duration = Duration::from_millis(1500);
-
-pub const DEFAULT_BRIGHTNESS: u8 = 60;
-const MIN_BRIGHTNESS: u8 = 10;
-const BRIGHTNESS_STEP: u8 = 5;
+/// Idle and monitoring threads.
+const IDLE_URGENCY: u8 = 4;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Screen {
@@ -69,10 +64,11 @@ pub struct App {
     last_needing: Option<String>,
     brightness: u8,
     generation: u64,
+    config: Config,
 }
 
 impl App {
-    pub fn new(brightness: u8) -> Self {
+    pub fn new(brightness: u8, config: Config) -> Self {
         Self {
             view: View::default(),
             ranked: Vec::new(),
@@ -83,9 +79,22 @@ impl App {
             showing_projects: false,
             message: None,
             last_needing: None,
-            brightness: brightness.clamp(MIN_BRIGHTNESS, 100),
+            brightness: brightness.clamp(config::BRIGHTNESS_RANGE.0, config::BRIGHTNESS_RANGE.1),
             generation: 0,
+            config,
         }
+    }
+
+    /// New bindings or preferences, from the settings window.
+    pub fn set_config(&mut self, config: Config, now: Timestamp) {
+        self.config = config;
+        // The control holding the names down may do something else now.
+        self.showing_projects = false;
+        self.refresh(now);
+    }
+
+    fn message_time(&self) -> Duration {
+        Duration::from_millis(self.config.preferences.message_ms.into())
     }
 
     pub fn update(&mut self, view: View, now: Timestamp) {
@@ -100,14 +109,18 @@ impl App {
             return;
         }
         let requests = status::child_requests(&self.view.threads);
+        let hide_idle = self.config.preferences.hide_idle;
         let mut ranked: Vec<_> = self
             .view
             .threads
             .values()
             .filter_map(|thread| {
                 let child = requests.get(thread.id.as_str()).copied();
-                status::is_relevant(thread, now, child)
-                    .then(|| (status::classify(thread, child).urgency(), thread))
+                if !status::is_relevant(thread, now, child) {
+                    return None;
+                }
+                let urgency = status::classify(thread, child).urgency();
+                (!hide_idle || urgency < IDLE_URGENCY).then_some((urgency, thread))
             })
             .collect();
         ranked.sort_by(|(a_urgency, a), (b_urgency, b)| {
@@ -190,41 +203,74 @@ impl App {
                 return Some(Command::Open(self.target(id)));
             }
             Action::Up(Control::Screen(key)) => self.held[key] = false,
-
-            Action::Down(Control::Button(NEW_THREAD)) => {
-                return Some(Command::Send(Shortcut::NewThread));
+            Action::Down(control) => return self.press(self.binding(control), now),
+            Action::Up(control) => {
+                if self.binding(control) == Press::ShowProjects {
+                    self.showing_projects = false;
+                }
             }
-            Action::Down(Control::Button(NEEDS_YOU)) => {
-                return self.next_needing_user(now).map(Command::Open);
+            Action::Turn(dial, direction) => {
+                let binding = self.config.bindings.dial(dial);
+                let (turn, direction) = (binding.turn, binding.direction(direction));
+                self.turn(turn, direction, now);
             }
-            Action::Down(Control::Button(SETTLE)) => return Some(Command::Send(Shortcut::Settle)),
+            Action::Unknown => {}
+        }
+        None
+    }
 
-            Action::Turn(Dial::Top, direction) => self.scroll(direction, ROW),
-            Action::Down(Control::Dial(Dial::Top)) => {
+    fn binding(&self, control: Control) -> Press {
+        match control {
+            Control::Screen(_) => Press::Nothing,
+            Control::Button(index) => self.config.bindings.key(index),
+            Control::Dial(dial) => self.config.bindings.dial(dial).press,
+        }
+    }
+
+    fn press(&mut self, press: Press, now: Instant) -> Option<Command> {
+        match press {
+            Press::Nothing => {}
+            Press::NewThread => return Some(Command::Send(Shortcut::NewThread)),
+            Press::Settle => return Some(Command::Send(Shortcut::Settle)),
+            Press::PreviousPage => self.scroll(Direction::Left, SCREEN_KEYS),
+            Press::NextPage => self.scroll(Direction::Right, SCREEN_KEYS),
+            Press::PreviousRow => self.scroll(Direction::Left, ROW),
+            Press::NextRow => self.scroll(Direction::Right, ROW),
+            Press::NeedsYou => return self.next_needing_user(now).map(Command::Open),
+            Press::Home => {
                 self.filter = None;
                 self.offset = 0;
                 self.message = None;
                 self.lay_out();
             }
-
-            Action::Turn(Dial::Left, direction) => {
-                let next = match direction {
-                    Direction::Left => self.brightness.saturating_sub(BRIGHTNESS_STEP),
-                    Direction::Right => self.brightness.saturating_add(BRIGHTNESS_STEP),
-                };
-                self.set_brightness(next, now);
+            Press::ResetBrightness => {
+                self.set_brightness(self.config.preferences.default_brightness, now);
             }
-            Action::Down(Control::Dial(Dial::Left)) => self.set_brightness(DEFAULT_BRIGHTNESS, now),
-
-            Action::Turn(Dial::Right, direction) => self.cycle_project(direction, now),
-            Action::Down(Control::Dial(Dial::Right)) => {
+            Press::ShowProjects => {
                 self.showing_projects = true;
                 self.message = None;
             }
-            Action::Up(Control::Dial(Dial::Right)) => self.showing_projects = false,
-            _ => {}
+            Press::PreviousProject => self.cycle_project(Direction::Left, now),
+            Press::NextProject => self.cycle_project(Direction::Right, now),
         }
         None
+    }
+
+    fn turn(&mut self, turn: Turn, direction: Direction, now: Instant) {
+        match turn {
+            Turn::Nothing => {}
+            Turn::ScrollRows => self.scroll(direction, ROW),
+            Turn::ScrollPages => self.scroll(direction, SCREEN_KEYS),
+            Turn::Brightness => {
+                let step = self.config.preferences.brightness_step;
+                let next = match direction {
+                    Direction::Left => self.brightness.saturating_sub(step),
+                    Direction::Right => self.brightness.saturating_add(step),
+                };
+                self.set_brightness(next, now);
+            }
+            Turn::Project => self.cycle_project(direction, now),
+        }
     }
 
     fn target(&self, thread_id: String) -> Target {
@@ -250,9 +296,9 @@ impl App {
     }
 
     fn set_brightness(&mut self, percent: u8, now: Instant) {
-        self.brightness = percent.clamp(MIN_BRIGHTNESS, 100);
+        self.brightness = percent.clamp(config::BRIGHTNESS_RANGE.0, config::BRIGHTNESS_RANGE.1);
         let tile = Tile::notice("BRIGHT", &format!("{}%", self.brightness));
-        self.message = Some((tile, now + MESSAGE_TIME));
+        self.message = Some((tile, now + self.message_time()));
     }
 
     fn project_name(&self, project: Option<&str>) -> &str {
@@ -289,7 +335,7 @@ impl App {
             Some(id) => self.project_name(Some(id)),
             None => "All projects",
         };
-        self.message = Some((Tile::notice("PROJECT", name), now + MESSAGE_TIME));
+        self.message = Some((Tile::notice("PROJECT", name), now + self.message_time()));
         self.filter = filter;
         self.offset = 0;
         self.lay_out();
@@ -316,7 +362,7 @@ impl App {
         };
         let Some(id) = next.map(|id| (*id).to_owned()) else {
             let tile = Tile::notice("ALL CLEAR", "Nothing needs you");
-            self.message = Some((tile, now + MESSAGE_TIME));
+            self.message = Some((tile, now + self.message_time()));
             return None;
         };
         self.message = None;
@@ -415,7 +461,16 @@ mod tests {
     use serde_json::{Value, json};
 
     use super::*;
+    use crate::config::Preferences;
+    use crate::input::Dial;
     use crate::t3::wire::Thread;
+
+    const NEW_THREAD: usize = 0;
+    const NEEDS_YOU: usize = 1;
+    const SETTLE: usize = 2;
+    const MESSAGE_TIME: Duration = Duration::from_millis(1500);
+    const DEFAULT_BRIGHTNESS: u8 = 60;
+    const MIN_BRIGHTNESS: u8 = config::BRIGHTNESS_RANGE.0;
 
     fn view(phase: Phase, threads: &[Value]) -> View {
         let threads = threads
@@ -463,7 +518,7 @@ mod tests {
     }
 
     fn app_with(threads: &[Value]) -> App {
-        let mut app = App::new(DEFAULT_BRIGHTNESS);
+        let mut app = App::new(DEFAULT_BRIGHTNESS, Config::default());
         app.update(view(Phase::Live, threads), Timestamp::UNIX_EPOCH);
         app
     }
@@ -682,5 +737,72 @@ mod tests {
         assert_eq!(app.brightness(), MIN_BRIGHTNESS);
         act(&mut app, Action::Down(Control::Dial(Dial::Left)));
         assert_eq!(app.brightness(), DEFAULT_BRIGHTNESS);
+    }
+
+    #[test]
+    fn rebound_controls_do_their_new_action() {
+        let mut app = app_with(&many(10));
+        let mut config = Config::default();
+        config.bindings.left_key = Press::NextRow;
+        config.bindings.top_dial.turn = Turn::ScrollPages;
+        config.bindings.top_dial.reverse = true;
+        config.bindings.right_dial.press = Press::Nothing;
+        app.set_config(config, Timestamp::UNIX_EPOCH);
+
+        // The left key, now next row.
+        button(&mut app, NEW_THREAD);
+        assert_eq!(press(&mut app, 0).as_deref(), Some("t03"));
+        // Reversed, so a right turn goes back.
+        act(&mut app, Action::Turn(Dial::Top, Direction::Right));
+        assert_eq!(press(&mut app, 0).as_deref(), Some("t00"));
+        act(&mut app, Action::Turn(Dial::Top, Direction::Left));
+        assert_eq!(press(&mut app, 0).as_deref(), Some("t06"));
+        act(&mut app, Action::Down(Control::Dial(Dial::Right)));
+        assert!(!app.showing_projects);
+    }
+
+    #[test]
+    fn a_new_config_releases_held_project_names() {
+        let mut app = app_with(&[working("busy")]);
+        act(&mut app, Action::Down(Control::Dial(Dial::Right)));
+        assert!(app.showing_projects);
+        let mut config = Config::default();
+        config.bindings.right_dial.press = Press::Nothing;
+        app.set_config(config, Timestamp::UNIX_EPOCH);
+        assert!(!app.showing_projects);
+    }
+
+    #[test]
+    fn hiding_idle_threads_frees_their_keys() {
+        let mut app = app_with(&[idle("quiet", "2030"), working("busy")]);
+        assert_eq!(press(&mut app, 1).as_deref(), Some("quiet"));
+        let config = Config {
+            preferences: Preferences {
+                hide_idle: true,
+                ..Preferences::default()
+            },
+            ..Config::default()
+        };
+        app.set_config(config, Timestamp::UNIX_EPOCH);
+        assert_eq!(press(&mut app, 0).as_deref(), Some("busy"));
+        assert_eq!(press(&mut app, 1), None);
+    }
+
+    #[test]
+    fn brightness_follows_the_preferences() {
+        let mut app = app_with(&[]);
+        let config = Config {
+            preferences: Preferences {
+                default_brightness: 80,
+                brightness_step: 10,
+                ..Preferences::default()
+            },
+            ..Config::default()
+        };
+        app.set_config(config, Timestamp::UNIX_EPOCH);
+        act(&mut app, Action::Turn(Dial::Left, Direction::Left));
+        assert_eq!(app.brightness(), DEFAULT_BRIGHTNESS - 10);
+        act(&mut app, Action::Down(Control::Dial(Dial::Left)));
+        assert_eq!(app.brightness(), 80);
     }
 }
