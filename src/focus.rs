@@ -2,8 +2,15 @@
 //!
 //! A HID report is not user input to Windows. The deep link alone raises T3 only when it was
 //! minimized, so we raise it ourselves first. That also makes a press feel immediate.
+//!
+//! New thread and settle have no link, and t3-dock's token is read-only, so they are T3's own
+//! keyboard shortcuts, typed only while T3 is in front.
 
 use std::time::{Duration, Instant};
+
+use windows_sys::Win32::UI::Input::KeyboardAndMouse::{
+    VIRTUAL_KEY, VK_CONTROL, VK_N, VK_S, VK_SHIFT,
+};
 
 use crate::app::Target;
 use crate::log::log;
@@ -52,6 +59,36 @@ pub fn describe() {
     }
 }
 
+/// Raises T3 if needed, then retries until it is in front, for at most 1.5 seconds from `started`.
+/// `before_wait` runs after the first raise, such as opening a link. Returns the retries.
+fn bring_to_front(exe: &str, started: Instant, before_wait: impl FnOnce() -> bool) -> Option<u32> {
+    let raise = || {
+        if let Some(window) = win::main_window(exe) {
+            window.raise();
+        }
+    };
+    if !win::is_foreground(exe) {
+        raise();
+    }
+    if !before_wait() {
+        return None;
+    }
+    // Windows sometimes refuses the first attempt, and T3 may still be restoring its window.
+    let mut retries = 0;
+    while !win::is_foreground(exe) {
+        if started.elapsed() >= FRONT_TIMEOUT {
+            log!("focus: T3 did not come to the front, retries={retries}");
+            return None;
+        }
+        std::thread::sleep(POLL);
+        if !win::is_foreground(exe) {
+            raise();
+            retries += 1;
+        }
+    }
+    Some(retries)
+}
+
 /// Blocks until T3 is in front, for at most 1.5 seconds.
 pub fn open(target: &Target) {
     let (Some(link), Some(exe)) = (deep_link(target), win::protocol_handler()) else {
@@ -60,36 +97,77 @@ pub fn open(target: &Target) {
     };
     let started = Instant::now();
     let was_front = win::is_foreground(&exe);
-    let raise = || {
-        if let Some(window) = win::main_window(&exe) {
-            window.raise();
+    let opened = || {
+        let opened = win::shell_open(&link);
+        if !opened {
+            log!("focus: opening the link failed");
         }
+        opened
     };
-    if !was_front {
-        raise();
+    if let Some(retries) = bring_to_front(&exe, started, opened) {
+        log!(
+            "focus: T3 in front, was_front={was_front} retries={retries} total={} ms",
+            started.elapsed().as_millis()
+        );
     }
-    let raised_ms = started.elapsed().as_millis();
-    if !win::shell_open(&link) {
-        log!("focus: opening the link failed");
+}
+
+/// A T3 keyboard shortcut. Both are T3's defaults and do nothing while its terminal has focus.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Shortcut {
+    /// Ctrl+N, "Chat: New", in the project T3 has open.
+    NewThread,
+    /// Ctrl+Shift+S, "Thread: Settle", on the thread T3 shows. It unsettles a settled one.
+    Settle,
+}
+
+impl Shortcut {
+    fn keys(self) -> &'static [VIRTUAL_KEY] {
+        match self {
+            Self::NewThread => &[VK_CONTROL, VK_N],
+            Self::Settle => &[VK_CONTROL, VK_SHIFT, VK_S],
+        }
+    }
+
+    /// Settling acts on whatever thread T3 shows, so it needs T3 already in front, where the
+    /// user can see that thread. Otherwise a press only raises T3.
+    fn needs_t3_in_front(self) -> bool {
+        self == Self::Settle
+    }
+}
+
+/// Sends `shortcut` to T3, and never to another window.
+pub fn send(shortcut: Shortcut) {
+    let Some(exe) = win::protocol_handler() else {
+        log!("focus: no t3code:// handler is registered");
+        return;
+    };
+    let started = Instant::now();
+    let was_front = win::is_foreground(&exe);
+    if bring_to_front(&exe, started, || true).is_none() {
         return;
     }
-    // Windows sometimes refuses the first attempt, and T3 may still be restoring its window.
-    let mut retries = 0;
-    while !win::is_foreground(&exe) {
-        if started.elapsed() >= FRONT_TIMEOUT {
-            log!("focus: T3 did not come to the front, retries={retries}");
-            return;
-        }
-        std::thread::sleep(POLL);
-        if !win::is_foreground(&exe) {
-            raise();
-            retries += 1;
-        }
+    if shortcut.needs_t3_in_front() && !was_front {
+        log!("focus: {shortcut:?} skipped, T3 was not in front, raised it");
+        return;
     }
-    log!(
-        "focus: T3 in front, was_front={was_front} retries={retries} raise={raised_ms} ms total={} ms",
-        started.elapsed().as_millis()
-    );
+    if !was_front {
+        // Let the restored window take keyboard focus before typing into it.
+        std::thread::sleep(POLL);
+    }
+    // Checked again right before sending, because the keys go to whatever is in front.
+    if !win::is_foreground(&exe) {
+        log!("focus: {shortcut:?} skipped, T3 lost the front");
+        return;
+    }
+    if win::send_chord(shortcut.keys()) {
+        log!(
+            "focus: sent {shortcut:?}, was_front={was_front} total={} ms",
+            started.elapsed().as_millis()
+        );
+    } else {
+        log!("focus: sending {shortcut:?} failed");
+    }
 }
 
 #[cfg(test)]

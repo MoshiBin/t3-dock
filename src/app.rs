@@ -1,6 +1,7 @@
 //! What the keys show and what the controls do.
 //!
-//! The keys without screens are previous page, next thread that needs the user, and next page.
+//! The keys without screens open a new thread, open the next thread that needs the user, and
+//! settle the thread T3 shows.
 //! The top dial scrolls a row and goes home when pressed. The left dial sets the brightness and
 //! resets it when pressed. The right dial picks a project and shows project names while held.
 
@@ -11,14 +12,15 @@ use std::time::{Duration, Instant};
 use jiff::Timestamp;
 
 use crate::board::{Board, Entry, NEEDS_USER};
+use crate::focus::Shortcut;
 use crate::input::{Action, Control, Dial, Direction, SCREEN_KEYS};
 use crate::render::Tile;
 use crate::status::{self, Status};
 use crate::t3::{Phase, View};
 
-const PREVIOUS: usize = 0;
+const NEW_THREAD: usize = 0;
 const NEEDS_YOU: usize = 1;
-const NEXT: usize = 2;
+const SETTLE: usize = 2;
 
 const ROW: usize = 3;
 const MESSAGE_TIME: Duration = Duration::from_millis(1500);
@@ -39,6 +41,12 @@ pub struct Screen {
 pub struct Target {
     pub environment_id: String,
     pub thread_id: String,
+}
+
+/// What the focus worker does for a press.
+pub enum Command {
+    Open(Target),
+    Send(Shortcut),
 }
 
 /// A relevant thread.
@@ -167,7 +175,7 @@ impl App {
         self.brightness
     }
 
-    pub fn input(&mut self, action: Action, now: Instant) -> Option<Target> {
+    pub fn input(&mut self, action: Action, now: Instant) -> Option<Command> {
         self.tick(now);
         match action {
             Action::Down(Control::Screen(key)) => {
@@ -179,13 +187,17 @@ impl App {
                     return None;
                 }
                 let id = self.thread_on(key)?.to_owned();
-                return Some(self.target(id));
+                return Some(Command::Open(self.target(id)));
             }
             Action::Up(Control::Screen(key)) => self.held[key] = false,
 
-            Action::Down(Control::Button(PREVIOUS)) => self.scroll(Direction::Left, SCREEN_KEYS),
-            Action::Down(Control::Button(NEXT)) => self.scroll(Direction::Right, SCREEN_KEYS),
-            Action::Down(Control::Button(NEEDS_YOU)) => return self.next_needing_user(now),
+            Action::Down(Control::Button(NEW_THREAD)) => {
+                return Some(Command::Send(Shortcut::NewThread));
+            }
+            Action::Down(Control::Button(NEEDS_YOU)) => {
+                return self.next_needing_user(now).map(Command::Open);
+            }
+            Action::Down(Control::Button(SETTLE)) => return Some(Command::Send(Shortcut::Settle)),
 
             Action::Turn(Dial::Top, direction) => self.scroll(direction, ROW),
             Action::Down(Control::Dial(Dial::Top)) => {
@@ -457,8 +469,10 @@ mod tests {
     }
 
     fn act(app: &mut App, action: Action) -> Option<String> {
-        app.input(action, Instant::now())
-            .map(|target| target.thread_id)
+        match app.input(action, Instant::now())? {
+            Command::Open(target) => Some(target.thread_id),
+            Command::Send(_) => None,
+        }
     }
 
     fn press(app: &mut App, key: usize) -> Option<String> {
@@ -532,19 +546,44 @@ mod tests {
     }
 
     #[test]
-    fn pages_stop_at_both_ends() {
+    fn scrolling_stops_at_both_ends() {
         let mut app = app_with(&many(14));
-        button(&mut app, NEXT);
+        let turn = |app: &mut App, direction| act(app, Action::Turn(Dial::Top, direction));
+        for _ in 0..2 {
+            turn(&mut app, Direction::Right);
+        }
         assert_eq!(press(&mut app, 0).as_deref(), Some("t06"));
-        button(&mut app, NEXT);
+        turn(&mut app, Direction::Right);
         // The last page is full rows, so it starts at the third row.
+        assert_eq!(press(&mut app, 0).as_deref(), Some("t09"));
+        turn(&mut app, Direction::Right);
         assert_eq!(press(&mut app, 0).as_deref(), Some("t09"));
         assert_eq!(press(&mut app, 4).as_deref(), Some("t13"));
         assert_eq!(press(&mut app, 5), None);
-        for _ in 0..3 {
-            button(&mut app, PREVIOUS);
+        for _ in 0..5 {
+            turn(&mut app, Direction::Left);
         }
         assert_eq!(press(&mut app, 0).as_deref(), Some("t00"));
+    }
+
+    #[test]
+    fn the_outer_buttons_send_t3_shortcuts() {
+        // Even while T3 is away: the focus worker finds out whether it is running.
+        for phase in [Phase::Live, Phase::Offline] {
+            let mut app = app_with(&[working("busy")]);
+            app.update(view(phase, &[working("busy")]), Timestamp::UNIX_EPOCH);
+            for (button, shortcut) in [
+                (NEW_THREAD, Shortcut::NewThread),
+                (SETTLE, Shortcut::Settle),
+            ] {
+                let sent = app.input(Action::Down(Control::Button(button)), Instant::now());
+                assert!(matches!(sent, Some(Command::Send(s)) if s == shortcut));
+                assert!(
+                    app.input(Action::Up(Control::Button(button)), Instant::now())
+                        .is_none()
+                );
+            }
+        }
     }
 
     #[test]
@@ -559,7 +598,7 @@ mod tests {
     #[test]
     fn one_page_does_not_scroll() {
         let mut app = app_with(&many(6));
-        button(&mut app, NEXT);
+        act(&mut app, Action::Turn(Dial::Top, Direction::Right));
         assert_eq!(press(&mut app, 0).as_deref(), Some("t00"));
     }
 
@@ -567,7 +606,9 @@ mod tests {
     fn nothing_moves_on_a_page_the_user_scrolled_to() {
         let mut threads = many(10);
         let mut app = app_with(&threads);
-        button(&mut app, NEXT);
+        for _ in 0..2 {
+            act(&mut app, Action::Turn(Dial::Top, Direction::Right));
+        }
         assert_eq!(press(&mut app, 2).as_deref(), Some("t08"));
 
         threads.push(working("new"));
