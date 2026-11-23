@@ -143,6 +143,9 @@ Thread fields we need. Parse leniently and ignore the rest:
 - Needs you: `pendingRuntimeRequest.{kind, blocking}, pendingGuestMessageCount`, and
   `hasActionableProposedPlan` when `interactionMode == "plan"`
 - Unread: `latestRunCompletedAt > lastVisitedAt`
+- Woke (read from the 0.1.12 nightly sidebar row): `snoozedUntil <= now`, `lastVisitedAt` missing or
+  earlier than `snoozedUntil`, and not settled. It beats Done and loses to failures and live runs.
+  An ended snooze keeps its `snoozedUntil`, and opening the thread sets `lastVisitedAt` to that time.
 - Visibility and order: `archivedAt, deletedAt, settledOverride, snoozedUntil, snoozedAt, pinnedAt, updatedAt`
 
 Read from the server bundle: updates are coalesced per thread and sorted by sequence, so dropping
@@ -211,7 +214,7 @@ Found while building:
 
     +--------+--------+--------+
     | agent  | agent  | agent  |  title + status color
-    +--------+--------+--------+  amber needs you, blue working, green done, red failed
+    +--------+--------+--------+  amber needs you or woke, blue working, green done, red failed
     | agent  | agent  | agent  |  press = focus that thread
     +--------+--------+--------+
      [prev]  [needs you]  [next]

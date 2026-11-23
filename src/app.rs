@@ -61,6 +61,8 @@ pub struct App {
     last_needing: Option<String>,
     brightness: u8,
     generation: u64,
+    /// When the threads were last ranked. Ended snoozes depend on it.
+    now: Timestamp,
 }
 
 impl App {
@@ -77,6 +79,7 @@ impl App {
             last_needing: None,
             brightness: brightness.clamp(MIN_BRIGHTNESS, 100),
             generation: 0,
+            now: Timestamp::UNIX_EPOCH,
         }
     }
 
@@ -91,6 +94,7 @@ impl App {
         if self.view.phase != Phase::Live {
             return;
         }
+        self.now = now;
         let requests = status::child_requests(&self.view.threads);
         let mut ranked: Vec<_> = self
             .view
@@ -99,7 +103,7 @@ impl App {
             .filter_map(|thread| {
                 let child = requests.get(thread.id.as_str()).copied();
                 status::is_relevant(thread, now, child)
-                    .then(|| (status::classify(thread, child).urgency(), thread))
+                    .then(|| (status::classify(thread, child, now).urgency(), thread))
             })
             .collect();
         ranked.sort_by(|(a_urgency, a), (b_urgency, b)| {
@@ -335,6 +339,7 @@ impl App {
             Some(status::classify(
                 thread,
                 requests.get(thread.id.as_str()).copied(),
+                self.now,
             ))
         })
     }

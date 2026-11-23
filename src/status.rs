@@ -21,6 +21,8 @@ pub enum Status {
     /// Live, but waiting on another thread or on background work.
     Waiting,
     Monitoring,
+    /// A snooze ended and the user has not opened the thread since.
+    Woke,
     /// Finished since the user last opened the thread.
     Done,
     Idle,
@@ -33,7 +35,7 @@ impl Status {
             Self::Approval | Self::Input | Self::Plan => 0,
             Self::Failed | Self::Limited => 1,
             Self::Starting | Self::Working | Self::Waiting => 2,
-            Self::Done => 3,
+            Self::Woke | Self::Done => 3,
             Self::Monitoring | Self::Idle => 4,
         }
     }
@@ -227,8 +229,18 @@ pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
     flagged
 }
 
+// T3's sidebar row: a snooze that ran out, unless the thread was opened since or settled.
+fn has_unseen_wake(thread: &Thread, now: Timestamp) -> bool {
+    let Some(woke) = millis(thread.snoozed_until.as_deref()) else {
+        return false;
+    };
+    woke <= now.as_millisecond()
+        && thread.settled_override.as_deref() != Some("settled")
+        && millis(thread.last_visited_at.as_deref()).is_none_or(|visited| visited < woke)
+}
+
 /// `child` is what the thread's children ask of it, from `child_requests`.
-pub fn classify(thread: &Thread, child: Option<Status>) -> Status {
+pub fn classify(thread: &Thread, child: Option<Status>, now: Timestamp) -> Status {
     if child == Some(Status::Approval) || has_pending_approval(thread) {
         return Status::Approval;
     }
@@ -266,6 +278,9 @@ pub fn classify(thread: &Thread, child: Option<Status>) -> Status {
         } else {
             Status::Working
         };
+    }
+    if has_unseen_wake(thread, now) {
+        return Status::Woke;
     }
     if has_unseen_completion(thread) {
         return Status::Done;
@@ -343,16 +358,16 @@ mod tests {
         serde_json::from_value(value).ok().unwrap()
     }
 
+    fn now() -> Timestamp {
+        "2030-01-01T12:00:00Z".parse().unwrap()
+    }
+
     fn status(fields: Value) -> Status {
-        classify(&thread(fields), None)
+        classify(&thread(fields), None, now())
     }
 
     fn relevant(fields: Value) -> bool {
-        is_relevant(
-            &thread(fields),
-            "2030-01-01T12:00:00Z".parse().unwrap(),
-            None,
-        )
+        is_relevant(&thread(fields), now(), None)
     }
 
     fn request(kind: &str) -> Value {
@@ -463,6 +478,26 @@ mod tests {
     }
 
     #[test]
+    fn woke_means_a_snooze_ended_unseen() {
+        let woke = json!({"snoozedUntil": AFTER, "lastVisitedAt": BEFORE});
+        assert_eq!(status(woke.clone()), Status::Woke);
+        assert_eq!(status(json!({"snoozedUntil": AFTER})), Status::Woke);
+        let seen = json!({"snoozedUntil": BEFORE, "lastVisitedAt": AFTER});
+        assert_eq!(status(seen), Status::Idle);
+        let still_snoozed = json!({"snoozedUntil": "2030-01-01T13:00:00Z"});
+        assert_eq!(status(still_snoozed), Status::Idle);
+        let settled = json!({"snoozedUntil": AFTER, "settledOverride": "settled"});
+        assert_eq!(status(settled), Status::Idle);
+        let unread = json!({"snoozedUntil": AFTER, "lastVisitedAt": BEFORE,
+                            "latestRunCompletedAt": AFTER});
+        assert_eq!(status(unread), Status::Woke);
+        let failed = json!({"snoozedUntil": AFTER, "status": "failed"});
+        assert_eq!(status(failed), Status::Failed);
+        let running = json!({"snoozedUntil": AFTER, "status": "running"});
+        assert_eq!(status(running), Status::Working);
+    }
+
+    #[test]
     fn visibility() {
         assert!(relevant(json!({})));
         assert!(!relevant(json!({"archivedAt": BEFORE})));
@@ -556,7 +591,7 @@ mod tests {
             HashMap::from([("middle", Status::Approval), ("top", Status::Approval)])
         );
         assert_eq!(
-            classify(&threads["top"], requests.get("top").copied()),
+            classify(&threads["top"], requests.get("top").copied(), now()),
             Status::Approval
         );
     }
@@ -600,10 +635,9 @@ mod tests {
             requests,
             HashMap::from([("asked", Status::Input), ("approve", Status::Approval)])
         );
-        let now = "2030-01-01T12:00:00Z".parse().unwrap();
         let asked = &threads["asked"];
-        assert!(is_relevant(asked, now, requests.get("asked").copied()));
-        assert_eq!(classify(asked, Some(Status::Input)), Status::Input);
-        assert!(!is_relevant(&threads["question"], now, None));
+        assert!(is_relevant(asked, now(), requests.get("asked").copied()));
+        assert_eq!(classify(asked, Some(Status::Input), now()), Status::Input);
+        assert!(!is_relevant(&threads["question"], now(), None));
     }
 }
