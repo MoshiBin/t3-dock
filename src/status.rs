@@ -3,6 +3,7 @@
 //! The rules are ported from `src/status.ts` in beastyrabbit/opendeck-t3-code-status dc27f17
 //! (MIT, see THIRD_PARTY.md), which mirrors T3 Code's own sidebar.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
@@ -309,6 +310,69 @@ pub fn classify(thread: &Thread, child: Option<Status>, now: Timestamp) -> Statu
     Status::Idle
 }
 
+/// Where T3's sidebar puts a shown thread, from the top. Read from the 0.1.12 nightly sidebar with
+/// its working shelf on, the default: pinned threads, then the active list, then the working shelf.
+/// The deck puts working threads before the active list, so they always get keys first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Section {
+    Pinned,
+    Working,
+    Active,
+}
+
+pub fn section(thread: &Thread, status: Status) -> Section {
+    if thread.pinned_at.is_some() {
+        Section::Pinned
+    } else if matches!(status, Status::Starting | Status::Working | Status::Waiting) {
+        Section::Working
+    } else {
+        Section::Active
+    }
+}
+
+fn latest(values: &[Option<&str>]) -> i64 {
+    values
+        .iter()
+        .filter_map(|value| millis(*value))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Sorts threads as T3's sidebar does within each section. Smaller comes first.
+pub fn sidebar_order(
+    thread: &Thread,
+    status: Status,
+) -> (Section, bool, Option<&str>, Reverse<i64>) {
+    let section = section(thread, status);
+    let created = thread.created_at.as_deref();
+    let completed = thread
+        .latest_run_completed_at
+        .as_ref()
+        .and_then(Option::as_deref);
+    let requested = thread.latest_run_requested_at.as_deref();
+    match section {
+        // Hand-ordered pins first, then the newest pins.
+        Section::Pinned => {
+            let key = thread.pin_order_key.as_deref();
+            (section, key.is_none(), key, Reverse(latest(&[created])))
+        }
+        // The last thing the user sent.
+        Section::Working => {
+            let sent = match &thread.latest_user_authored_message_at {
+                Some(sent) => sent.as_deref(),
+                None => requested,
+            };
+            (section, false, None, Reverse(latest(&[created, sent])))
+        }
+        // The last start or finish of a run, or the thread's creation or un-settling.
+        Section::Active => {
+            let unsettled = thread.unsettled_at.as_deref();
+            let time = latest(&[created, unsettled, requested, completed]);
+            (section, false, None, Reverse(time))
+        }
+    }
+}
+
 // Only a request for the user or a fresh failure ends a snooze early.
 fn is_snoozed(thread: &Thread, now: Timestamp, child_request: bool) -> bool {
     let Some(wake_at) = millis(thread.snoozed_until.as_deref()) else {
@@ -514,6 +578,39 @@ mod tests {
         assert_eq!(status(failed), Status::Failed);
         let running = json!({"snoozedUntil": AFTER, "status": "running"});
         assert_eq!(status(running), Status::Working);
+    }
+
+    #[test]
+    fn sidebar_order_follows_t3() {
+        let order = |fields: Value| {
+            let thread = thread(fields);
+            let status = classify(&thread, None, now());
+            let (section, unkeyed, key, time) = sidebar_order(&thread, status);
+            (section, unkeyed, key.map(str::to_owned), time)
+        };
+        let pinned = order(json!({"pinnedAt": BEFORE, "status": "running"}));
+        let working = order(json!({"status": "running", "createdAt": BEFORE}));
+        let old = order(json!({"createdAt": BEFORE}));
+        let finished = order(json!({"createdAt": BEFORE, "latestRunCompletedAt": AFTER}));
+        let unsettled = order(json!({"createdAt": BEFORE, "unsettledAt": AFTER}));
+        assert!(pinned < working && working < finished && finished < old);
+        assert_eq!(finished.3, unsettled.3);
+
+        let keyed = order(json!({"pinnedAt": BEFORE, "pinOrderKey": "b"}));
+        let first = order(json!({"pinnedAt": BEFORE, "pinOrderKey": "a"}));
+        assert!(first < keyed && keyed < pinned);
+
+        let sent = order(
+            json!({"status": "running", "latestUserAuthoredMessageAt": AFTER,
+                                "latestRunRequestedAt": BEFORE}),
+        );
+        let requested = order(json!({"status": "running", "latestRunRequestedAt": AFTER}));
+        let agent_only = order(
+            json!({"status": "running", "latestUserAuthoredMessageAt": null,
+                                      "latestRunRequestedAt": AFTER}),
+        );
+        assert_eq!(sent.3, requested.3);
+        assert!(sent < agent_only);
     }
 
     #[test]

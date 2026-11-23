@@ -231,6 +231,12 @@ Found while building:
   that thread, like a side chat's. `src/t3/merge.rs` resolves the delegator's merged key.
 - The title fills a key, so the project shows while the bottom-right dial is held.
 - Keys move only at home (`src/board.rs`). A page the user scrolled to is frozen.
+- Threads rank in T3's sidebar order (0.1.12 nightly, working shelf on): pinned by `pinOrderKey`
+  then newest `createdAt`; working threads by the last send (`latestUserAuthoredMessageAt`, or
+  `latestRunRequestedAt` when absent); the rest by the latest of `createdAt`, `unsettledAt`,
+  `latestRunRequestedAt` and `latestRunCompletedAt`. T3 lists its working shelf below the active
+  list; the deck ranks it above, so working threads get keys first. Urgency only decides which
+  key a thread may take.
 
 ## Milestones
 

@@ -53,6 +53,16 @@ pub struct Thread {
     pub snoozed_until: Option<String>,
     pub snoozed_at: Option<String>,
     pub updated_at: Option<String>,
+
+    // Sidebar order.
+    pub created_at: Option<String>,
+    pub unsettled_at: Option<String>,
+    pub pinned_at: Option<String>,
+    pub pin_order_key: Option<String>,
+    pub latest_run_requested_at: Option<String>,
+    /// Absent and null differ: when absent, T3 dates a send by `latestRunRequestedAt`.
+    #[serde(default, deserialize_with = "present")]
+    pub latest_user_authored_message_at: Option<Option<String>>,
 }
 
 #[derive(Clone, Deserialize)]

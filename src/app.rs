@@ -4,7 +4,6 @@
 //! The top dial scrolls a row and goes home when pressed. The left dial sets the brightness and
 //! resets it when pressed. The right dial picks a project and shows project names while held.
 
-use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
@@ -103,22 +102,20 @@ impl App {
             .filter_map(|thread| {
                 let child = requests.get(thread.id.as_str()).copied();
                 status::is_relevant(thread, &self.view.threads, now, child)
-                    .then(|| (status::classify(thread, child, now).urgency(), thread))
+                    .then(|| (status::classify(thread, child, now), thread))
             })
             .collect();
-        ranked.sort_by(|(a_urgency, a), (b_urgency, b)| {
-            (a_urgency, Reverse(&a.updated_at), &a.id).cmp(&(
-                b_urgency,
-                Reverse(&b.updated_at),
-                &b.id,
-            ))
+        // T3's sidebar order, so the keys start out as T3 lists the threads.
+        ranked.sort_by(|(a_status, a), (b_status, b)| {
+            (status::sidebar_order(a, *a_status), &a.id)
+                .cmp(&(status::sidebar_order(b, *b_status), &b.id))
         });
         self.ranked = ranked
             .into_iter()
-            .map(|(urgency, thread)| Ranked {
+            .map(|(status, thread)| Ranked {
                 entry: Entry {
                     id: thread.id.clone(),
-                    urgency,
+                    urgency: status.urgency(),
                 },
                 project: thread.project_id.clone(),
             })
