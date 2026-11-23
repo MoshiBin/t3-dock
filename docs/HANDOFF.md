@@ -137,7 +137,8 @@ Stream items, by `kind`:
 
 Thread fields we need. Parse leniently and ignore the rest:
 
-- Identity: `id, projectId, title, creationSource, lineage.{parentThreadId, relationshipToParent, sideChat}`
+- Identity: `id, projectId, title, creationSource, lineage.{parentThreadId, relationshipToParent, sideChat},
+  delegatedFrom.{environmentId, threadId}`
 - Run: `status, activityRunStatus, latestRunId, activeProviderThreadId, blockedOnThreadWait,
   pendingBackgroundTasks[].{kind, awaited}, lastErrorClass, limitRecovery`
 - Needs you: `pendingRuntimeRequest.{kind, blocking}, pendingGuestMessageCount`, and
@@ -224,6 +225,10 @@ Found while building:
 - Subagents and side chats fold into their parent, as in T3's sidebar
   (`relationshipToParent != "subagent" && sideChat != true` is a top-level thread). A side chat's
   approval or question shows on its direct parent, even a settled one.
+- A thread with `delegatedFrom` (a task delegated from another thread, often in another environment)
+  is top-level in its own server but folds under the delegating thread while that thread is loaded
+  and not archived (0.1.12 nightly, `environment-delegated-under-parent`). Its requests show on
+  that thread, like a side chat's. `src/t3/merge.rs` resolves the delegator's merged key.
 - The title fills a key, so the project shows while the bottom-right dial is held.
 - Keys move only at home (`src/board.rs`). A page the user scrolled to is frozen.
 

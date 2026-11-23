@@ -102,7 +102,7 @@ impl App {
             .values()
             .filter_map(|thread| {
                 let child = requests.get(thread.id.as_str()).copied();
-                status::is_relevant(thread, now, child)
+                status::is_relevant(thread, &self.view.threads, now, child)
                     .then(|| (status::classify(thread, child, now).urgency(), thread))
             })
             .collect();

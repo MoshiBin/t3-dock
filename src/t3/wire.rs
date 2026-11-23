@@ -20,6 +20,11 @@ pub struct Thread {
     pub title: Option<String>,
     pub creation_source: Option<String>,
     pub lineage: Option<Lineage>,
+    /// Set on a thread that another thread delegated, possibly from another environment.
+    pub delegated_from: Option<DelegatedFrom>,
+    /// The merged key of the thread that delegated this one. Filled in by the merge, not sent.
+    #[serde(skip)]
+    pub delegated_by: Option<String>,
 
     pub status: Option<String>,
     /// Absent and null differ: older servers omit it, and null means no live run.
@@ -57,6 +62,13 @@ pub struct Lineage {
     pub relationship_to_parent: Option<String>,
     /// A side chat is a fork that T3 shows inside its parent, not in the sidebar.
     pub side_chat: Option<bool>,
+}
+
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegatedFrom {
+    pub environment_id: Option<String>,
+    pub thread_id: Option<String>,
 }
 
 #[derive(Clone, Deserialize)]

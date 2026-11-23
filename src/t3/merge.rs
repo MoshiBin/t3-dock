@@ -107,6 +107,7 @@ impl Merger {
             threads.extend(view.threads.iter().map(|(id, t)| (id.clone(), t.clone())));
             projects.extend(view.projects.iter().map(|(id, n)| (id.clone(), n.clone())));
         }
+        self.link_delegations(&mut threads);
         View {
             phase: if any_live {
                 Phase::Live
@@ -120,6 +121,27 @@ impl Merger {
                 local: self.local.phase,
                 remotes: remotes.iter().map(|view| view.phase).collect(),
             },
+        }
+    }
+}
+
+impl Merger {
+    /// Points each delegated thread at its delegating thread's merged key, whichever environment
+    /// either runs in.
+    fn link_delegations(&self, threads: &mut Threads) {
+        for thread in threads.values_mut() {
+            let Some(from) = &thread.delegated_from else {
+                continue;
+            };
+            let (Some(environment), Some(id)) = (&from.environment_id, &from.thread_id) else {
+                continue;
+            };
+            let key = if *environment == self.local.environment_id {
+                id.clone()
+            } else {
+                remote_key(environment, id)
+            };
+            Arc::make_mut(thread).delegated_by = Some(key);
         }
     }
 }
@@ -319,6 +341,43 @@ mod tests {
             "Proj (Box)".to_owned()
         );
         assert_eq!(merged.environment_id, "env-local");
+    }
+
+    #[test]
+    fn delegated_threads_point_at_their_delegator_across_environments() {
+        let mut merger = Merger {
+            local: view(
+                Phase::Live,
+                "env-local",
+                &[
+                    json!({"id": "boss"}),
+                    json!({"id": "here", "delegatedFrom": {"environmentId": "env-r",
+                                                           "threadId": "far-boss"}}),
+                ],
+            ),
+            ..Merger::default()
+        };
+        merger.set_remote(
+            &remote("env-r"),
+            &view(
+                Phase::Live,
+                "env-r",
+                &[
+                    json!({"id": "far-boss"}),
+                    json!({"id": "far", "delegatedFrom": {"environmentId": "env-local",
+                                                          "threadId": "boss"}}),
+                ],
+            ),
+        );
+        let merged = merger.view();
+        let far_boss = remote_key("env-r", "far-boss");
+        assert_eq!(
+            merged.threads["here"].delegated_by.as_deref(),
+            Some(far_boss.as_str())
+        );
+        let far = &merged.threads[&remote_key("env-r", "far")];
+        assert_eq!(far.delegated_by.as_deref(), Some("boss"));
+        assert_eq!(merged.threads["boss"].delegated_by, None);
     }
 
     #[test]

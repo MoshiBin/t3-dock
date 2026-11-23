@@ -164,6 +164,19 @@ pub fn is_child(thread: &Thread) -> bool {
     is_subagent(thread) || is_side_chat(thread)
 }
 
+/// The thread that delegated this one, while T3 shows it there: present and not archived.
+/// Otherwise T3's sidebar lists the delegated thread on its own.
+fn delegator<'a>(thread: &Thread, threads: &'a Threads) -> Option<&'a Thread> {
+    threads
+        .get(thread.delegated_by.as_deref()?)
+        .map(|parent| &**parent)
+        .filter(|parent| parent.archived_at.is_none())
+}
+
+fn is_folded(thread: &Thread, threads: &Threads) -> bool {
+    is_child(thread) || delegator(thread, threads).is_some()
+}
+
 fn parent_id(thread: &Thread) -> Option<&str> {
     thread.lineage.as_ref()?.parent_thread_id.as_deref()
 }
@@ -172,7 +185,7 @@ fn parent_id(thread: &Thread) -> Option<&str> {
 ///
 /// A live subagent's approval reaches every parent up to the top thread. A coordinator answers
 /// its subagent's questions and provider-native subagents ask on their parent, so neither is
-/// flagged. A side chat's approval or question reaches its direct parent.
+/// flagged. A side chat's or a delegated thread's approval or question reaches its direct parent.
 pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
     let mut flagged = HashMap::new();
     let mut flag = |id, status| {
@@ -182,7 +195,8 @@ pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
         }
     };
     for child in threads.values() {
-        if is_side_chat(child) {
+        let delegated = delegator(child, threads).map(|parent| parent.id.as_str());
+        if is_side_chat(child) || delegated.is_some() {
             let request = child
                 .pending_runtime_request
                 .as_ref()
@@ -192,7 +206,7 @@ pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
                 Some("user_input") => Status::Input,
                 Some(_) => Status::Approval,
             };
-            if let Some(parent) = parent_id(child) {
+            if let Some(parent) = delegated.or_else(|| parent_id(child)) {
                 flag(parent, status);
             }
             continue;
@@ -323,8 +337,13 @@ fn is_snoozed(thread: &Thread, now: Timestamp, child_request: bool) -> bool {
 }
 
 /// Whether a thread deserves a key.
-pub fn is_relevant(thread: &Thread, now: Timestamp, child: Option<Status>) -> bool {
-    if thread.archived_at.is_some() || thread.deleted_at.is_some() || is_child(thread) {
+pub fn is_relevant(
+    thread: &Thread,
+    threads: &Threads,
+    now: Timestamp,
+    child: Option<Status>,
+) -> bool {
+    if thread.archived_at.is_some() || thread.deleted_at.is_some() || is_folded(thread, threads) {
         return false;
     }
     let child_request = child.is_some();
@@ -367,7 +386,7 @@ mod tests {
     }
 
     fn relevant(fields: Value) -> bool {
-        is_relevant(&thread(fields), now(), None)
+        is_relevant(&thread(fields), &Threads::new(), now(), None)
     }
 
     fn request(kind: &str) -> Value {
@@ -636,8 +655,44 @@ mod tests {
             HashMap::from([("asked", Status::Input), ("approve", Status::Approval)])
         );
         let asked = &threads["asked"];
-        assert!(is_relevant(asked, now(), requests.get("asked").copied()));
+        let shown = is_relevant(asked, &threads, now(), requests.get("asked").copied());
+        assert!(shown);
         assert_eq!(classify(asked, Some(Status::Input), now()), Status::Input);
-        assert!(!is_relevant(&threads["question"], now(), None));
+        assert!(!is_relevant(&threads["question"], &threads, now(), None));
+    }
+
+    fn delegated(id: &str, by: &str, extra: Value) -> Thread {
+        let mut fields = json!({"id": id});
+        for (key, field) in extra.as_object().unwrap() {
+            fields[key] = field.clone();
+        }
+        let mut thread = thread(fields);
+        thread.delegated_by = Some(by.to_owned());
+        thread
+    }
+
+    #[test]
+    fn delegated_threads_fold_into_a_present_delegator() {
+        let threads = index(vec![
+            thread(json!({"id": "boss", "settledOverride": "settled"})),
+            delegated("task", "boss", json!({})),
+            delegated(
+                "asks",
+                "boss",
+                json!({"pendingRuntimeRequest": request("command")}),
+            ),
+            thread(json!({"id": "archived-boss", "archivedAt": BEFORE})),
+            delegated("orphan", "archived-boss", json!({})),
+            delegated("far", "not-loaded", json!({})),
+        ]);
+        let requests = child_requests(&threads);
+        assert_eq!(requests, HashMap::from([("boss", Status::Approval)]));
+        let shown =
+            |id: &str| is_relevant(&threads[id], &threads, now(), requests.get(id).copied());
+        assert!(!shown("task"));
+        assert!(!shown("asks"));
+        assert!(shown("boss"));
+        assert!(shown("orphan"));
+        assert!(shown("far"));
     }
 }
