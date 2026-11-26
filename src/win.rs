@@ -8,7 +8,8 @@ use windows_sys::Win32::Foundation::{
     WAIT_OBJECT_0,
 };
 use windows_sys::Win32::Security::Cryptography::{
-    CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
+    BCRYPT_USE_SYSTEM_PREFERRED_RNG, BCryptGenRandom, CRYPT_INTEGER_BLOB,
+    CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
 };
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
 use windows_sys::Win32::System::JobObjects::{
@@ -187,6 +188,22 @@ pub fn protocol_handler() -> Option<String> {
     };
     // The length includes the terminator.
     (result == 0 && length > 1).then(|| String::from_utf16_lossy(&buffer[..length as usize - 1]))
+}
+
+/// Bytes from the system's cryptographic random number generator.
+pub fn random_bytes<const N: usize>() -> Option<[u8; N]> {
+    let mut bytes = [0; N];
+    let length = u32::try_from(N).ok()?;
+    // SAFETY: the buffer is `length` bytes, and no algorithm handle is needed with this flag.
+    let status = unsafe {
+        BCryptGenRandom(
+            null_mut(),
+            bytes.as_mut_ptr(),
+            length,
+            BCRYPT_USE_SYSTEM_PREFERRED_RNG,
+        )
+    };
+    (status == 0).then_some(bytes)
 }
 
 /// Hands a URL to its handler without a command shell.
@@ -480,6 +497,12 @@ mod tests {
         unsafe {
             RegDeleteKeyW(HKEY_CURRENT_USER, super::wide(&key).as_ptr());
         }
+    }
+
+    #[test]
+    fn random_bytes_differ() {
+        let (a, b) = (super::random_bytes::<32>(), super::random_bytes::<32>());
+        assert!(a.is_some() && a != b);
     }
 
     #[test]

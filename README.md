@@ -59,19 +59,26 @@ terminal has focus. They are typed only while T3 is in front.
     | thread | thread | thread | thread | thread |  |   more    |
     +--------+--------+--------+--------+--------+  +-----------+
 
-All 15 keys are threads. The side display can't be pressed: it counts the threads that need you, the
-ones working, and those that didn't get a key. Notices such as "Connecting" show at its top instead
-of on key 1. The 293S has no other keys or dials, so the bindings in the settings window apply only to
-the N3. If both are plugged in, t3-dock uses the N3.
+All 15 keys are threads. The side display can't be pressed. By default it counts the threads that
+need you, the ones working, and those that didn't get a key. Notices such as "Connecting" cover its
+top tile instead of key 1. The 293S has no other keys or dials, so the control bindings in the
+settings window apply only to the N3. If both are plugged in, t3-dock uses the N3.
 
-The bottom tile can show an allowance instead, such as an AI plan's monthly credits: what is left,
-and a bar of how much is used that turns amber at 75% and red at 90%. t3-dock holds no credentials
-for it. Another program that has them writes `%LOCALAPPDATA%\t3-dock\usage.json` (a temporary
-file, then rename), and the tile follows its changes:
+Under **Side display** in the settings, each tile can show one of: threads that need you, threads
+working, threads without a key, Devin ACUs left, a clock, or nothing.
 
-    {"label": "ACU", "used": 1270.5, "limit": 1350}
+### Devin ACUs
 
-Delete the file to bring back the count of threads without a key.
+Optional. Under **Devin** in the settings, enter the address you open Devin at (`app.devin.ai`, or
+your enterprise's) and press **Sign in with Devin**. The browser opens Devin's own sign-in, as
+`devin auth login` does, and hands the result back to t3-dock on `127.0.0.1`. A side tile set to
+**Devin ACUs left** then shows what is left of your allowance this billing cycle, with a bar of how
+much is used that turns amber at 75% and red at 90%. It refreshes every two minutes.
+
+The sign-in can do anything your Devin account can, so t3-dock keeps it encrypted for your Windows
+user (DPAPI, `%LOCALAPPDATA%\t3-dock\devin.token`), sends it only over HTTPS to Devin, and uses
+it only to read the allowance. **Sign out** deletes it. This uses the same private endpoints as the
+Devin CLI, not a documented API, so a Devin update may break it.
 
 **Settings** in the tray menu opens a window where you can give the three keys and the three dials
 other actions, reverse a dial, and change preferences: the reset brightness, the brightness per

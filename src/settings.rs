@@ -1,17 +1,21 @@
 //! The settings window: rebinds the keys and dials and sets the preferences.
 //!
 //! It runs as its own process (`t3-dock settings`), started from the tray menu, so the dock keeps
-//! its own thread layout and a closed window leaves nothing behind. It only writes `config.json`,
-//! which the running dock reloads, and the start-at-login value in the registry.
+//! its own thread layout and a closed window leaves nothing behind. It writes `config.json`,
+//! which the running dock reloads, and the start-at-login value in the registry. Signing in to
+//! Devin happens here too, at once rather than on save, and the dock notices the saved sign-in.
 
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex};
 
 use eframe::egui::{
     self, Align, Button, CentralPanel, Checkbox, ComboBox, Grid, Layout, Modal, Panel, RichText,
-    ScrollArea, Slider, ViewportBuilder, ViewportCommand,
+    ScrollArea, Slider, Spinner, TextEdit, ViewportBuilder, ViewportCommand,
 };
 
-use crate::config::{self, Bindings, Config, DialBinding, Press, Turn};
+use crate::config::{self, Bindings, Config, DialBinding, Press, SideTile, Turn};
+use crate::devin;
 use crate::log::log;
 use crate::{login, tray, win};
 
@@ -34,7 +38,7 @@ pub fn run(data: &Path) -> Result<(), String> {
     };
 
     let path = data.join(config::FILE);
-    let window = Settings::new(path.clone(), Config::load(&path));
+    let window = Settings::new(data.to_owned(), path.clone(), Config::load(&path));
     let icon = egui::IconData {
         rgba: tray::icon_pixels(),
         width: tray::ICON_SIZE,
@@ -55,8 +59,21 @@ pub fn run(data: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// A sign-in running on its own thread.
+struct SigningIn {
+    cancel: Arc<AtomicBool>,
+    result: Arc<Mutex<Option<Result<(), String>>>>,
+}
+
 struct Settings {
+    data: PathBuf,
     path: PathBuf,
+    /// The Devin web app it is signed in to, if it is.
+    devin_account: Option<String>,
+    devin_address: String,
+    signing_in: Option<SigningIn>,
+    /// The result of the last sign-in or sign-out, and whether it failed.
+    devin_status: Option<(String, bool)>,
     saved: Config,
     draft: Config,
     login_saved: bool,
@@ -68,9 +85,17 @@ struct Settings {
 }
 
 impl Settings {
-    fn new(path: PathBuf, config: Config) -> Self {
+    fn new(data: PathBuf, path: PathBuf, config: Config) -> Self {
         let login = login::is_on();
+        let devin_account = devin::load(&data).map(|account| account.address().to_owned());
         Self {
+            devin_address: devin_account
+                .clone()
+                .unwrap_or_else(|| devin::DEFAULT_ADDRESS.to_owned()),
+            devin_account,
+            signing_in: None,
+            devin_status: None,
+            data,
             path,
             saved: config,
             draft: config,
@@ -204,6 +229,137 @@ impl Settings {
         ));
     }
 
+    fn side_display(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Side display");
+        ui.label("The three tiles beside the keys of a 293S. Notices cover the top one.");
+        ui.add_space(6.0);
+        let names = ["Top", "Middle", "Bottom"];
+        Grid::new("side")
+            .num_columns(3)
+            .spacing([12.0, 8.0])
+            .striped(true)
+            .show(ui, |ui| {
+                for (index, tile) in self.draft.side.iter_mut().enumerate() {
+                    ui.label(format!("    {}", names[index]));
+                    ComboBox::from_id_salt(("side", index))
+                        .width(COMBO_WIDTH)
+                        .selected_text(tile.label())
+                        .show_ui(ui, |ui| {
+                            for option in SideTile::ALL {
+                                ui.selectable_value(tile, option, option.label());
+                            }
+                        });
+                    reset_button(ui, tile, config::DEFAULT_SIDE[index]);
+                    ui.end_row();
+                }
+            });
+        if self.draft.side.contains(&SideTile::DevinAcus) && self.devin_account.is_none() {
+            ui.label(RichText::new("Devin ACUs need a Devin sign-in, below.").weak());
+        }
+    }
+
+    fn devin(&mut self, ui: &mut egui::Ui) {
+        ui.heading("Devin");
+        ui.label(
+            "Optional. Signed in, t3-dock reads what is left of your Devin ACU allowance for a              side tile. It keeps the sign-in encrypted for your Windows user and uses it for              nothing else.",
+        );
+        ui.add_space(6.0);
+        self.finish_sign_in();
+        if let Some(signing_in) = &self.signing_in {
+            ui.horizontal(|ui| {
+                ui.add(Spinner::new());
+                ui.label("Finish signing in in your browser.");
+                if ui.button("Cancel").clicked() {
+                    signing_in.cancel.store(true, Ordering::Relaxed);
+                }
+            });
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(200));
+        } else if let Some(address) = self.devin_account.clone() {
+            ui.horizontal(|ui| {
+                ui.label(format!("Signed in to {address}."));
+                if ui.button("Sign out").clicked() {
+                    self.devin_status = Some(if devin::sign_out(&self.data) {
+                        self.devin_account = None;
+                        ("Signed out.".into(), false)
+                    } else {
+                        ("Could not sign out.".into(), true)
+                    });
+                }
+            });
+        } else {
+            ui.horizontal(|ui| {
+                ui.label("Devin address");
+                ui.add(
+                    TextEdit::singleline(&mut self.devin_address)
+                        .desired_width(COMBO_WIDTH)
+                        .hint_text(devin::DEFAULT_ADDRESS),
+                )
+                .on_hover_text("The address you open Devin at, such as app.devin.ai");
+                let valid = devin::normalize_address(&self.devin_address).is_some();
+                if ui
+                    .add_enabled(valid, Button::new("Sign in with Devin"))
+                    .clicked()
+                {
+                    self.start_sign_in();
+                }
+            });
+        }
+        if let Some((text, failed)) = &self.devin_status {
+            let text = RichText::new(text.as_str());
+            ui.label(if *failed {
+                text.color(ui.visuals().error_fg_color)
+            } else {
+                text.weak()
+            });
+        }
+    }
+
+    fn start_sign_in(&mut self) {
+        let signing_in = SigningIn {
+            cancel: Arc::new(AtomicBool::new(false)),
+            result: Arc::new(Mutex::new(None)),
+        };
+        let (cancel, result) = (signing_in.cancel.clone(), signing_in.result.clone());
+        let (address, data) = (self.devin_address.clone(), self.data.clone());
+        std::thread::spawn(move || {
+            let outcome = devin::sign_in(&address, &data, &cancel);
+            if let Err(error) = &outcome {
+                log!("settings: Devin sign-in failed: {error}");
+            }
+            if let Ok(mut slot) = result.lock() {
+                *slot = Some(outcome);
+            }
+        });
+        self.devin_status = None;
+        self.signing_in = Some(signing_in);
+    }
+
+    fn finish_sign_in(&mut self) {
+        let Some(signing_in) = &self.signing_in else {
+            return;
+        };
+        let Some(outcome) = signing_in
+            .result
+            .lock()
+            .ok()
+            .and_then(|mut slot| slot.take())
+        else {
+            return;
+        };
+        self.signing_in = None;
+        self.devin_status = Some(match outcome {
+            Ok(()) => {
+                self.devin_account = devin::load(&self.data).map(|a| a.address().to_owned());
+                (
+                    "Signed in. The dock shows your ACUs in a minute.".into(),
+                    false,
+                )
+            }
+            Err(error) => (error, true),
+        });
+    }
+
     fn actions(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             if ui
@@ -295,6 +451,14 @@ impl eframe::App for Settings {
                 ui.separator();
                 ui.add_space(6.0);
                 self.preferences(ui);
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(6.0);
+                self.side_display(ui);
+                ui.add_space(14.0);
+                ui.separator();
+                ui.add_space(6.0);
+                self.devin(ui);
             });
         });
         self.close_prompt(&ctx);

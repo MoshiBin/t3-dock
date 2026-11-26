@@ -125,6 +125,30 @@ up from the four corner keys (codes `0d`, `01`, `0f`, `03`).
   the side display and its cover hides one edge or the other, depending on the viewing angle.
 - `Device::connect(info, 3, 18, 0)`.
 
+## Devin allowance
+
+Read from the Devin CLI 2026-10 binary's strings and pi-devin (whose protobuf schema is vendored
+from oh-my-pi, MIT), then tested against an enterprise deployment on 2026-11-26 with a probe script.
+`src/devin/` has the client. Not a documented API.
+
+- Devin's documented consumption API needs an enterprise-admin key and has no per-user allowance.
+- Sign-in (the CLI's PKCE flow): open
+  `https://<web app>/auth/cli/continue?redirect_uri=<http://127.0.0.1:<port>/callback>&state=<s>&prompt=select_account&code_challenge=<S256>&code_challenge_method=S256`.
+  The browser comes back to `/callback?code=..&state=..`.
+- Exchange: `POST https://api.<web app domain>/auth/cli/token` with JSON `{code, code_verifier}`
+  returns `{token, webapp_host}`. The web app's own `/auth/cli/token` answered 403. The API host is
+  the web app's with its first label replaced by `api` (`app.devin.ai` → `api.devin.ai`; an
+  enterprise `<name>.devinenterprise.com` → `api.devinenterprise.com`). The token is a JWT with
+  only a `session_id` claim and no expiry.
+- Allowance: `POST https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus`,
+  Connect unary, `content-type: application/proto`, `connect-protocol-version: 1`. The request is
+  `GetUserStatusRequest{1: Metadata{1 ide_name, 7 ide_version, 12 extension_name, 2 extension_version,
+  3 api_key = "devin-session-token$" + token, 4 locale, 5 os}}`. Metadata naming t3-dock is accepted;
+  metadata with only the key gets `invalid_argument`. Read `user_status(1).plan_status(13)`:
+  `acu_consumed` (19, double) and `acu_limit` (20, double). The billing cycle (2, 3) was a year
+  for the tested account, not a month.
+- TLS goes through SChannel (`ureq` `native-tls`), so a corporate root in the Windows store works.
+
 ## T3 Code protocol
 
 Read from the installed 0.1.11 bundle and beastyrabbit/opendeck-t3-code-status (MIT, dc27f17).

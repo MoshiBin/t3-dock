@@ -5,6 +5,7 @@ mod app;
 mod board;
 mod config;
 mod device;
+mod devin;
 mod focus;
 mod input;
 mod log;
@@ -15,7 +16,6 @@ mod settings;
 mod status;
 mod t3;
 mod tray;
-mod usage;
 mod win;
 
 use std::io::Write;
@@ -168,7 +168,6 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
 
     let brightness_file = data.join("brightness");
     let mut settings = config::Watch::new(data.join(config::FILE));
-    let mut allowance = usage::Watch::new(&data);
     let config = config::Config::load(settings.path());
     let brightness = saved_brightness(&brightness_file, config.preferences.default_brightness);
     let mut app = App::new(brightness, config);
@@ -178,6 +177,8 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     let (view_tx, mut views) = watch::channel(t3::View::default());
     let device = device::start(screen_rx, message_tx)?;
     let tray = tray::Tray::start(t3_home.clone(), data.clone());
+    let (devin_tx, mut devin_status) = watch::channel(devin::Status::SignedOut);
+    let devin = tokio::spawn(devin::poll(data.clone(), devin_tx));
     let client = tokio::spawn(t3::run_all(t3_home, data, view_tx));
     let (mut health, mut connected) = (t3::Health::default(), None);
     let mut tray_text = String::new();
@@ -212,9 +213,8 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                     log!("config: reloaded");
                     app.set_config(config, Timestamp::now());
                 }
-                if let Some(usage) = allowance.changed() {
-                    app.set_usage(usage);
-                }
+                let (day, time) = clock_text(&jiff::ZonedDateTime::now());
+                app.set_clock(day, time);
                 // Written here, not on every click of the dial.
                 if app.brightness() != saved {
                     saved = app.brightness();
@@ -232,6 +232,11 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                 }
                 last_tick = now;
                 app.refresh(Timestamp::now());
+            }
+            changed = devin_status.changed() => {
+                if changed.is_ok() {
+                    app.set_devin(*devin_status.borrow_and_update());
+                }
             }
             changed = views.changed() => {
                 if changed.is_err() {
@@ -282,6 +287,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     };
 
     client.abort();
+    devin.abort();
     drop(screen_tx);
     if timeout(Duration::from_secs(5), device).await.is_err() {
         log!("app: the device did not close in time");
@@ -289,6 +295,12 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     tray.close();
     log!("app: stopped");
     result
+}
+
+/// Such as `WED 26` and `10:47`, in local time.
+fn clock_text(now: &jiff::ZonedDateTime) -> (String, String) {
+    let day = now.strftime("%a %d").to_string().to_ascii_uppercase();
+    (day, now.strftime("%H:%M").to_string())
 }
 
 fn phase_text(phase: t3::Phase) -> &'static str {

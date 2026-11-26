@@ -92,6 +92,18 @@ impl Tile {
     }
 
     /// A count on the side display, such as how many threads need the user.
+    /// One short value in large type, such as the time.
+    pub fn big(banner: &str, body: &str) -> Self {
+        Self {
+            banner: banner.into(),
+            body: body.into(),
+            accent: GRAY,
+            large: true,
+            gauge: None,
+            pressed: false,
+        }
+    }
+
     /// Gray when the count is zero.
     pub fn count(banner: &str, count: usize, accent: Accent) -> Self {
         let accent = match accent {
@@ -249,6 +261,19 @@ impl Renderer {
         let attrs = Attrs::new()
             .family(Family::Name("Segoe UI"))
             .weight(text.weight);
+        // Large single values, such as a time, shrink to fit rather than lose characters.
+        if text.lines == 1 && text.size > 20.0 {
+            let mut font = text.size;
+            while font > text.size * 0.6 {
+                buffer.set_metrics(Metrics::new(font * scale, text.line_height * scale));
+                buffer.set_text(text.value, &attrs, Shaping::Advanced, text.align);
+                buffer.shape_until_scroll(&mut self.fonts, false);
+                if buffer.layout_runs().count() <= 1 {
+                    break;
+                }
+                font -= 1.0;
+            }
+        }
         fit(
             &mut self.fonts,
             &mut buffer,
@@ -398,6 +423,9 @@ mod tests {
             Tile::allowance("ACU LEFT", 400.0, 1350.0),
             Tile::allowance("ACU LEFT", 1100.0, 1350.0),
             Tile::allowance("ACU LEFT", 1270.5, 1350.0),
+            Tile::big("WED 26", "10:47"),
+            Tile::notice("DEVIN", "Sign in from Settings"),
+            Tile::count("NEEDS YOU", 2, Accent::Attention),
         ];
         let mut renderer = Renderer::new();
         let rows = tiles.len().div_ceil(3) as u32;
