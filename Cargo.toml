@@ -18,11 +18,15 @@ jiff = "1"
 mirajazz = "0.16.3"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+# The PKCE challenge of the Devin sign-in.
+sha2 = "0.10"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "sync", "time"] }
 # No TLS: t3-dock only talks plain HTTP to loopback.
 tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "handshake"] }
 tray-icon = { version = "0.26", default-features = false }
-ureq = { version = "3", default-features = false }
+# T3 stays plain HTTP on loopback. TLS is only for Devin, through SChannel, so the Windows
+# certificate store applies.
+ureq = { version = "3", default-features = false, features = ["native-tls"] }
 zeroize = "1"
 
 [dependencies.windows-sys]

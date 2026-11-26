@@ -105,6 +105,50 @@ mirajazz traps:
 - Don't run MiraBox's own app at the same time.
 - Initializing sets brightness to 0, so set it after every connect.
 
+### Stream Dock 293S V3
+
+Read from MiraBox's MIT SDK (`StreamDock293sV3.py`, C++ `streamdock293sV3.cpp`) and, for facts
+only, opendeck-akp153 (GPL). `src/model.rs` has the mapping. Confirmed by the user on 2026-11-26:
+key order, rotation, both image sizes (`cargo test show_numbers` and `show_frames`), and down and
+up from the four corner keys (codes `0d`, `01`, `0f`, `03`).
+
+- `6603:1014`, product string `HOTSPOTEKUSB HID DEMO`, same interfaces and report sizes as the N3.
+  `6603:1005` may be the same model but is not handled.
+- Protocol v3. 15 screen keys, 5 by 3, and a narrow side display of three tiles that only shows:
+  the SDK says it sends no input. No dials and no keys without screens.
+- Image slots 1..15 (wire, 1-based) run down each column, starting with the right-hand column:
+  slot 1 is the top-right key, 3 the bottom-right, 13 the top-left. Slots 16..18 are the side
+  tiles, top to bottom. Input codes `01`..`0f` number the keys like the slots, with down and up.
+- JPEG, rotated 90 degrees counterclockwise (the SDK's PIL `rotate(90)`, C++
+  `key_rotate_angle = 270`). Keys are 96x96, as the SDK says. Side tiles are 88x88: the SDK's 96
+  loses its left edge, and of frames at 96, 88 and 82 only 88 showed both side edges. A gap between
+  the side display and its cover hides one edge or the other, depending on the viewing angle.
+- `Device::connect(info, 3, 18, 0)`.
+
+## Devin allowance
+
+Read from the Devin CLI 2026-10 binary's strings and pi-devin (whose protobuf schema is vendored
+from oh-my-pi, MIT), then tested against an enterprise deployment on 2026-11-26 with a probe script.
+`src/devin/` has the client. Not a documented API.
+
+- Devin's documented consumption API needs an enterprise-admin key and has no per-user allowance.
+- Sign-in (the CLI's PKCE flow): open
+  `https://<web app>/auth/cli/continue?redirect_uri=<http://127.0.0.1:<port>/callback>&state=<s>&prompt=select_account&code_challenge=<S256>&code_challenge_method=S256`.
+  The browser comes back to `/callback?code=..&state=..`.
+- Exchange: `POST https://api.<web app domain>/auth/cli/token` with JSON `{code, code_verifier}`
+  returns `{token, webapp_host}`. The web app's own `/auth/cli/token` answered 403. The API host is
+  the web app's with its first label replaced by `api` (`app.devin.ai` → `api.devin.ai`; an
+  enterprise `<name>.devinenterprise.com` → `api.devinenterprise.com`). The token is a JWT with
+  only a `session_id` claim and no expiry.
+- Allowance: `POST https://server.codeium.com/exa.seat_management_pb.SeatManagementService/GetUserStatus`,
+  Connect unary, `content-type: application/proto`, `connect-protocol-version: 1`. The request is
+  `GetUserStatusRequest{1: Metadata{1 ide_name, 7 ide_version, 12 extension_name, 2 extension_version,
+  3 api_key = "devin-session-token$" + token, 4 locale, 5 os}}`. Metadata naming t3-dock is accepted;
+  metadata with only the key gets `invalid_argument`. Read `user_status(1).plan_status(13)`:
+  `acu_consumed` (19, double) and `acu_limit` (20, double). The billing cycle (2, 3) was a year
+  for the tested account, not a month.
+- TLS goes through SChannel (`ureq` `native-tls`), so a corporate root in the Windows store works.
+
 ## T3 Code protocol
 
 Read from the installed 0.1.11 bundle and beastyrabbit/opendeck-t3-code-status (MIT, dc27f17).
@@ -275,4 +319,5 @@ Found while building:
 - https://github.com/MiraboxSpace/StreamDock-Device-SDK fc124cb (MIT)
 - https://github.com/beastyrabbit/opendeck-t3-code-status dc27f17 (MIT)
 - https://github.com/4ndv/opendeck-akp03 10d1834 (GPL-3.0: facts only, no code)
+- https://github.com/4ndv/opendeck-akp153 ef80fda (GPL-3.0: facts only, no code)
 - https://github.com/hsalazr/deck-for-t3code 8e962a7 (GPL-3.0: facts only, no code)

@@ -7,8 +7,6 @@
 //! The ranking is T3's sidebar order, not urgency, so every thread not yet home gets its chance at
 //! a key, and the one it takes is the lowest ranked it may displace.
 
-use crate::input::SCREEN_KEYS;
-
 pub const NEEDS_USER: u8 = 0;
 const FINISHED: u8 = 3;
 const IDLE: u8 = 4;
@@ -20,9 +18,12 @@ pub struct Entry {
     pub urgency: u8,
 }
 
-#[derive(Default)]
 pub struct Board {
     slots: Vec<Option<String>>,
+    /// Keys on the first page.
+    home: usize,
+    /// Keys in a row, the smallest scroll.
+    row: usize,
 }
 
 fn may_displace(candidate: u8, shown: u8) -> bool {
@@ -30,6 +31,14 @@ fn may_displace(candidate: u8, shown: u8) -> bool {
 }
 
 impl Board {
+    pub fn new(home: usize, row: usize) -> Self {
+        Self {
+            slots: Vec::new(),
+            home,
+            row,
+        }
+    }
+
     pub fn get(&self, position: usize) -> Option<&str> {
         self.slots.get(position)?.as_deref()
     }
@@ -41,7 +50,7 @@ impl Board {
             .iter()
             .rposition(Option::is_some)
             .map_or(0, |last| last + 1);
-        used.saturating_sub(SCREEN_KEYS).div_ceil(3) * 3
+        used.saturating_sub(self.home).div_ceil(self.row) * self.row
     }
 
     /// Updates the board while another page is on screen: nothing moves.
@@ -65,11 +74,13 @@ impl Board {
     pub fn settle(&mut self, ranked: &[Entry]) {
         let rank = |id: &str| ranked.iter().position(|entry| entry.id == id);
 
-        let mut home: [Option<String>; SCREEN_KEYS] = std::array::from_fn(|key| {
-            self.get(key)
-                .filter(|id| rank(id).is_some())
-                .map(str::to_owned)
-        });
+        let mut home: Vec<Option<String>> = (0..self.home)
+            .map(|key| {
+                self.get(key)
+                    .filter(|id| rank(id).is_some())
+                    .map(str::to_owned)
+            })
+            .collect();
         for candidate in ranked {
             if home.iter().flatten().any(|id| *id == candidate.id) {
                 continue;
@@ -131,7 +142,7 @@ mod tests {
 
     #[test]
     fn a_low_ranked_request_still_takes_an_idle_key() {
-        let mut board = Board::default();
+        let mut board = Board::new(6, 3);
         let mut list: Vec<Entry> = entries(&full(IDLE));
         board.settle(&list);
         list.insert(0, entry("newer-idle", IDLE));
@@ -148,8 +159,18 @@ mod tests {
     }
 
     #[test]
+    fn a_wider_board_scrolls_by_its_own_rows() {
+        let mut board = Board::new(15, 5);
+        let list: Vec<(String, u8)> = (0..21).map(|i| (format!("t{i:02}"), IDLE)).collect();
+        let list: Vec<(&str, u8)> = list.iter().map(|(id, u)| (id.as_str(), *u)).collect();
+        board.settle(&entries(&list));
+        assert_eq!(board.get(14), Some("t14"));
+        assert_eq!(board.last_offset(), 10);
+    }
+
+    #[test]
     fn starts_in_rank_order() {
-        let mut board = Board::default();
+        let mut board = Board::new(6, 3);
         board.settle(&entries(&[
             ("idle", IDLE),
             ("ask", NEEDS_USER),
@@ -160,7 +181,7 @@ mod tests {
 
     #[test]
     fn a_change_of_rank_does_not_move_a_key() {
-        let mut board = Board::default();
+        let mut board = Board::new(6, 3);
         board.settle(&entries(&[("a", WORKING), ("b", IDLE)]));
         board.settle(&entries(&[("a", IDLE), ("b", NEEDS_USER)]));
         assert_eq!(shown(&board)[..2], ["a", "b"]);
@@ -168,7 +189,7 @@ mod tests {
 
     #[test]
     fn a_removed_thread_leaves_a_hole_that_the_next_one_fills() {
-        let mut board = Board::default();
+        let mut board = Board::new(6, 3);
         board.settle(&entries(&[("a", WORKING), ("b", WORKING), ("c", WORKING)]));
         board.settle(&entries(&[("a", WORKING), ("c", WORKING)]));
         assert_eq!(shown(&board)[..3], ["a", "-", "c"]);
@@ -178,7 +199,7 @@ mod tests {
 
     #[test]
     fn a_new_active_thread_takes_only_the_least_recent_idle_key() {
-        let mut board = Board::default();
+        let mut board = Board::new(6, 3);
         let mut list = full(IDLE);
         list[1].1 = WORKING;
         board.settle(&entries(&list));
@@ -195,7 +216,7 @@ mod tests {
 
     #[test]
     fn working_threads_keep_their_keys_from_everyone() {
-        let mut board = Board::default();
+        let mut board = Board::new(6, 3);
         let mut list = full(WORKING);
         board.settle(&entries(&list));
         list.push(("ask", NEEDS_USER));
@@ -205,7 +226,7 @@ mod tests {
 
     #[test]
     fn needing_the_user_beats_finished_but_working_does_not() {
-        let mut board = Board::default();
+        let mut board = Board::new(6, 3);
         let mut list = full(FINISHED);
         board.settle(&entries(&list));
         list.push(("busy", WORKING));

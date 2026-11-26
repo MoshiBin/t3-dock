@@ -108,6 +108,47 @@ impl Turn {
     }
 }
 
+/// What a tile on a side display shows, such as the 293S's. A notice from t3-dock, such as
+/// "Offline", covers the top tile whatever it shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SideTile {
+    #[default]
+    Blank,
+    NeedsYou,
+    Working,
+    /// Threads that have no key on this page.
+    WithoutKey,
+    /// What is left of the Devin ACU allowance. Needs a Devin sign-in.
+    DevinAcus,
+    Clock,
+}
+
+impl SideTile {
+    pub const ALL: [Self; 6] = [
+        Self::NeedsYou,
+        Self::Working,
+        Self::WithoutKey,
+        Self::DevinAcus,
+        Self::Clock,
+        Self::Blank,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Blank => "Nothing",
+            Self::NeedsYou => "Threads that need you",
+            Self::Working => "Threads working",
+            Self::WithoutKey => "Threads without a key",
+            Self::DevinAcus => "Devin ACUs left",
+            Self::Clock => "Clock",
+        }
+    }
+}
+
+pub const DEFAULT_SIDE: [SideTile; 3] =
+    [SideTile::NeedsYou, SideTile::Working, SideTile::WithoutKey];
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct DialBinding {
@@ -212,11 +253,23 @@ impl Default for Preferences {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub bindings: Bindings,
     pub preferences: Preferences,
+    /// The side display's tiles, from the top.
+    pub side: [SideTile; 3],
+}
+
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            bindings: Bindings::default(),
+            preferences: Preferences::default(),
+            side: DEFAULT_SIDE,
+        }
+    }
 }
 
 impl Config {
@@ -309,6 +362,17 @@ mod tests {
         assert_eq!(config.bindings.middle_key, Press::Home);
         assert_eq!(config.bindings.left_key, Press::NewThread);
         assert_eq!(config.preferences, Preferences::default());
+    }
+
+    #[test]
+    fn side_tiles_are_kept() {
+        assert_eq!(Config::default().side, DEFAULT_SIDE);
+        let config = Config::parse(r#"{"side": ["clock", "devin_acus", "blank"]}"#).unwrap();
+        assert_eq!(
+            config.side,
+            [SideTile::Clock, SideTile::DevinAcus, SideTile::Blank]
+        );
+        assert_eq!(config.bindings, Bindings::default());
     }
 
     #[test]

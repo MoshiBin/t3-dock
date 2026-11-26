@@ -1,4 +1,4 @@
-//! Draws key tiles, upright. The device layer rotates them.
+//! Draws key tiles, upright and at any square size. The device layer rotates them.
 
 use cosmic_text::{
     Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
@@ -7,8 +7,9 @@ use image::{Rgb, RgbImage};
 
 use crate::status::Status;
 
+/// The size the layout below is in. Other sizes scale it.
 pub const SIZE: u32 = 64;
-const BANNER: u32 = 15;
+const BANNER: f32 = 15.0;
 
 const DARK: [u8; 3] = [12, 12, 16];
 const LIGHT: [u8; 3] = [240, 240, 240];
@@ -17,6 +18,7 @@ const BLUE: [u8; 3] = [60, 140, 255];
 const GREEN: [u8; 3] = [50, 200, 110];
 const RED: [u8; 3] = [235, 70, 70];
 const GRAY: [u8; 3] = [130, 130, 140];
+const TRACK: [u8; 3] = [60, 60, 68];
 
 /// Everything that affects one key's pixels. No `Debug`, since it holds a title.
 #[derive(Clone, PartialEq, Eq)]
@@ -25,6 +27,8 @@ pub struct Tile {
     body: String,
     accent: [u8; 3],
     large: bool,
+    /// A bar along the bottom, filled this many thousandths.
+    gauge: Option<u16>,
     pub pressed: bool,
 }
 
@@ -60,6 +64,7 @@ impl Tile {
             },
             accent,
             large: false,
+            gauge: None,
             pressed: false,
         }
     }
@@ -70,6 +75,7 @@ impl Tile {
             body: body.into(),
             accent: GRAY,
             large: false,
+            gauge: None,
             pressed: false,
         }
     }
@@ -80,6 +86,67 @@ impl Tile {
             body: String::new(),
             accent: DARK,
             large: false,
+            gauge: None,
+            pressed: false,
+        }
+    }
+
+    /// A count on the side display, such as how many threads need the user.
+    /// One short value in large type, such as the time.
+    pub fn big(banner: &str, body: &str) -> Self {
+        Self {
+            banner: banner.into(),
+            body: body.into(),
+            accent: GRAY,
+            large: true,
+            gauge: None,
+            pressed: false,
+        }
+    }
+
+    /// Gray when the count is zero.
+    pub fn count(banner: &str, count: usize, accent: Accent) -> Self {
+        let accent = match accent {
+            _ if count == 0 => GRAY,
+            Accent::Plain => GRAY,
+            Accent::Attention => AMBER,
+            Accent::Busy => BLUE,
+        };
+        Self {
+            banner: banner.into(),
+            body: count.to_string(),
+            accent,
+            large: true,
+            gauge: None,
+            pressed: false,
+        }
+    }
+
+    /// What is left of an allowance, with a bar of how much is used. Green, then amber from 75%
+    /// used and red from 90%.
+    pub fn allowance(banner: &str, used: f64, limit: f64) -> Self {
+        let fraction = if limit > 0.0 {
+            (used / limit).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let accent = match fraction {
+            f if f >= 0.9 => RED,
+            f if f >= 0.75 => AMBER,
+            _ => GREEN,
+        };
+        let left = (limit - used).max(0.0);
+        let body = if left >= 10.0 {
+            format!("{left:.0}")
+        } else {
+            format!("{left:.1}")
+        };
+        Self {
+            banner: banner.into(),
+            body,
+            accent,
+            large: true,
+            gauge: Some((fraction * 1000.0).round() as u16),
             pressed: false,
         }
     }
@@ -92,9 +159,18 @@ impl Tile {
             body: number.to_string(),
             accent: GRAY,
             large: true,
+            gauge: None,
             pressed: false,
         }
     }
+}
+
+/// The colors a count may have when it is not zero.
+#[derive(Clone, Copy)]
+pub enum Accent {
+    Plain,
+    Attention,
+    Busy,
 }
 
 struct Text<'a> {
@@ -102,7 +178,7 @@ struct Text<'a> {
     size: f32,
     line_height: f32,
     lines: usize,
-    top: i32,
+    top: f32,
     color: [u8; 3],
     weight: Weight,
     align: Option<Align>,
@@ -121,56 +197,83 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, tile: &Tile) -> RgbImage {
+    /// A `size` by `size` image.
+    pub fn render(&mut self, tile: &Tile, size: u32) -> RgbImage {
         let (background, ink) = if tile.pressed {
             (LIGHT, DARK)
         } else {
             (DARK, LIGHT)
         };
-        let mut image = RgbImage::from_fn(SIZE, SIZE, |_, y| {
-            Rgb(if y < BANNER { tile.accent } else { background })
+        let scale = size as f32 / SIZE as f32;
+        let banner = (BANNER * scale).round() as u32;
+        let mut image = RgbImage::from_fn(size, size, |_, y| {
+            Rgb(if y < banner { tile.accent } else { background })
         });
         self.draw(
             &mut image,
+            scale,
             Text {
                 value: &tile.banner,
                 size: 10.0,
                 line_height: 13.0,
                 lines: 1,
-                top: 1,
+                top: 1.0,
                 color: DARK,
                 weight: Weight::BOLD,
                 align: Some(Align::Center),
             },
         );
-        let (size, line_height, lines, weight, align) = if tile.large {
+        let (size, line_height, lines, weight, align) = if tile.gauge.is_some() {
+            (26.0, 32.0, 1, Weight::BOLD, Some(Align::Center))
+        } else if tile.large {
             (34.0, 44.0, 1, Weight::BOLD, Some(Align::Center))
         } else {
             (12.0, 15.0, 3, Weight::NORMAL, None)
         };
         self.draw(
             &mut image,
+            scale,
             Text {
                 value: &tile.body,
                 size,
                 line_height,
                 lines,
-                top: 17,
+                top: 17.0,
                 color: ink,
                 weight,
                 align,
             },
         );
+        if let Some(permille) = tile.gauge {
+            draw_gauge(&mut image, scale, permille, tile.accent);
+        }
         image
     }
 
-    fn draw(&mut self, image: &mut RgbImage, text: Text<'_>) {
-        const MARGIN: i32 = 3;
-        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(text.size, text.line_height));
-        buffer.set_size(Some((SIZE as i32 - 2 * MARGIN) as f32), None);
+    /// Draws `text`, whose sizes are for a 64-pixel key, scaled to the image.
+    fn draw(&mut self, image: &mut RgbImage, scale: f32, text: Text<'_>) {
+        let size = image.width() as i32;
+        let margin = (3.0 * scale).round() as i32;
+        let top = (text.top * scale).round() as i32;
+        let metrics = Metrics::new(text.size * scale, text.line_height * scale);
+        let mut buffer = Buffer::new(&mut self.fonts, metrics);
+        buffer.set_size(Some((size - 2 * margin) as f32), None);
         let attrs = Attrs::new()
             .family(Family::Name("Segoe UI"))
             .weight(text.weight);
+        // Large single values, such as a time, shrink to fit rather than lose characters.
+        if text.lines == 1 && text.size > 20.0 {
+            let mut font = text.size;
+            while font > text.size * 0.6 {
+                buffer.set_metrics(Metrics::new(font * scale, text.line_height * scale));
+                buffer.set_text(text.value, &attrs, Shaping::Advanced, text.align);
+                buffer.shape_until_scroll(&mut self.fonts, false);
+                if buffer.layout_runs().count() <= 1 {
+                    break;
+                }
+                font -= 1.0;
+            }
+        }
         fit(
             &mut self.fonts,
             &mut buffer,
@@ -190,8 +293,8 @@ impl Renderer {
                 let source = [color.r(), color.g(), color.b()];
                 for y in y..y + height as i32 {
                     for x in x..x + width as i32 {
-                        let (x, y) = (x + MARGIN, y + text.top);
-                        if !(0..SIZE as i32).contains(&x) || !(0..SIZE as i32).contains(&y) {
+                        let (x, y) = (x + margin, y + top);
+                        if !(0..size).contains(&x) || !(0..size).contains(&y) {
                             continue;
                         }
                         let pixel = image.get_pixel_mut(x as u32, y as u32);
@@ -203,6 +306,20 @@ impl Renderer {
                 }
             },
         );
+    }
+}
+
+/// A bar near the bottom: the used part in `accent` on a gray track.
+fn draw_gauge(image: &mut RgbImage, scale: f32, permille: u16, accent: [u8; 3]) {
+    let at = |value: f32| (value * scale).round() as u32;
+    let (left, right) = (at(4.0), image.width() - at(4.0));
+    let (top, bottom) = (at(51.0), at(59.0));
+    let filled = left + (right - left) * u32::from(permille.min(1000)) / 1000;
+    for y in top..bottom {
+        for x in left..right {
+            let color = if x < filled { accent } else { TRACK };
+            image.put_pixel(x, y, Rgb(color));
+        }
     }
 }
 
@@ -251,10 +368,31 @@ mod tests {
 
     #[test]
     fn tile_is_key_sized_with_the_banner_on_top() {
-        let image = Renderer::new().render(&Tile::thread("Invented title", Status::Failed));
-        assert_eq!(image.dimensions(), (SIZE, SIZE));
-        assert_eq!(image.get_pixel(0, 0).0, RED);
-        assert_eq!(image.get_pixel(0, SIZE - 1).0, DARK);
+        let mut renderer = Renderer::new();
+        for size in [SIZE, 96] {
+            let image = renderer.render(&Tile::thread("Invented title", Status::Failed), size);
+            assert_eq!(image.dimensions(), (size, size));
+            assert_eq!(image.get_pixel(0, 0).0, RED);
+            assert_eq!(image.get_pixel(0, size - 1).0, DARK);
+        }
+    }
+
+    #[test]
+    fn an_allowance_fills_its_bar_with_what_is_used() {
+        let tile = Tile::allowance("ACU LEFT", 1270.5, 1350.0);
+        assert_eq!(
+            (tile.body.as_str(), tile.gauge, tile.accent),
+            ("80", Some(941), RED)
+        );
+        let tile = Tile::allowance("ACU LEFT", 100.0, 1000.0);
+        assert_eq!((tile.body.as_str(), tile.accent), ("900", GREEN));
+        let tile = Tile::allowance("ACU LEFT", 1400.0, 1350.0);
+        assert_eq!((tile.body.as_str(), tile.gauge), ("0.0", Some(1000)));
+
+        let image = Renderer::new().render(&Tile::allowance("ACU LEFT", 50.0, 100.0), 88);
+        // Used on the left of the bar, the rest on the right.
+        assert_eq!(image.get_pixel(10, 75).0, GREEN);
+        assert_eq!(image.get_pixel(78, 75).0, TRACK);
     }
 
     #[test]
@@ -282,11 +420,18 @@ mod tests {
             ),
             Tile::notice("NO TOKEN", "Use the tray menu"),
             pressed,
+            Tile::allowance("ACU LEFT", 400.0, 1350.0),
+            Tile::allowance("ACU LEFT", 1100.0, 1350.0),
+            Tile::allowance("ACU LEFT", 1270.5, 1350.0),
+            Tile::big("WED 26", "10:47"),
+            Tile::notice("DEVIN", "Sign in from Settings"),
+            Tile::count("NEEDS YOU", 2, Accent::Attention),
         ];
         let mut renderer = Renderer::new();
-        let mut sheet = RgbImage::from_pixel(3 * 208 + 16, 2 * 208 + 16, Rgb([55, 55, 58]));
+        let rows = tiles.len().div_ceil(3) as u32;
+        let mut sheet = RgbImage::from_pixel(3 * 208 + 16, rows * 208 + 16, Rgb([55, 55, 58]));
         for (i, tile) in tiles.iter().enumerate() {
-            let key = renderer.render(tile);
+            let key = renderer.render(tile, SIZE);
             let zoomed =
                 image::imageops::resize(&key, 192, 192, image::imageops::FilterType::Nearest);
             let (x, y) = (16 + i % 3 * 208, 16 + i / 3 * 208);

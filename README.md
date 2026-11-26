@@ -1,7 +1,8 @@
 # t3-dock
 
 Open-source host app that shows [T3 Code](https://github.com/pingdotgg/t3code) agent threads on the
-screen keys of a MiraBox N3 and focuses a thread when you press its key. The stock firmware stays.
+screen keys of a MiraBox Stream Dock N3 or 293S V3 and focuses a thread when you press its key. The
+stock firmware stays.
 
 **Status: early, and working on real hardware.** All four milestones are written and have been used on
 an N3 with T3 Code 0.1.11 on Windows 11. The T3 stream it reads is not a stable API. Some paths, such
@@ -47,6 +48,37 @@ The keys under the screens:
 
 New and settle press T3's default shortcuts, so they don't work if you changed those, or while T3's
 terminal has focus. They are typed only while T3 is in front.
+
+### Stream Dock 293S V3
+
+    +--------+--------+--------+--------+--------+  +-----------+
+    | thread | thread | thread | thread | thread |  | needs you |
+    +--------+--------+--------+--------+--------+  +-----------+
+    | thread | thread | thread | thread | thread |  |  working  |
+    +--------+--------+--------+--------+--------+  +-----------+
+    | thread | thread | thread | thread | thread |  |   more    |
+    +--------+--------+--------+--------+--------+  +-----------+
+
+All 15 keys are threads. The side display can't be pressed. By default it counts the threads that
+need you, the ones working, and those that didn't get a key. Notices such as "Connecting" cover its
+top tile instead of key 1. The 293S has no other keys or dials, so the control bindings in the
+settings window apply only to the N3. If both are plugged in, t3-dock uses the N3.
+
+Under **Side display** in the settings, each tile can show one of: threads that need you, threads
+working, threads without a key, Devin ACUs left, a clock, or nothing.
+
+### Devin ACUs
+
+Optional. Under **Devin** in the settings, enter the address you open Devin at (`app.devin.ai`, or
+your enterprise's) and press **Sign in with Devin**. The browser opens Devin's own sign-in, as
+`devin auth login` does, and hands the result back to t3-dock on `127.0.0.1`. A side tile set to
+**Devin ACUs left** then shows what is left of your allowance this billing cycle, with a bar of how
+much is used that turns amber at 75% and red at 90%. It refreshes every two minutes.
+
+The sign-in can do anything your Devin account can, so t3-dock keeps it encrypted for your Windows
+user (DPAPI, `%LOCALAPPDATA%\t3-dock\devin.token`), sends it only over HTTPS to Devin, and uses
+it only to read the allowance. **Sign out** deletes it. This uses the same private endpoints as the
+Devin CLI, not a documented API, so a Devin update may break it.
 
 **Settings** in the tray menu opens a window where you can give the three keys and the three dials
 other actions, reverse a dial, and change preferences: the reset brightness, the brightness per
@@ -102,7 +134,9 @@ ids, tokens or message text.
 
     cargo test
     cargo test preview -- --ignored         render sample tiles to target/tiles.png
-    cargo test read_survives -- --ignored   HID regression test: needs an N3, stop t3-dock first
+    cargo test read_survives -- --ignored   HID regression test: needs a Stream Dock, stop t3-dock first
+    cargo test show_numbers -- --ignored --nocapture
+                                            number every key and print presses, to check the order
     cargo run --example probe -- out.png    open the N3 without writing to it
 
 Third-party code is credited in [THIRD_PARTY.md](THIRD_PARTY.md).
