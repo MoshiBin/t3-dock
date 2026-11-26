@@ -51,10 +51,23 @@ pub enum Failure {
 }
 
 /// The sealed file. Implements neither `Debug` nor `Display`.
-#[derive(Serialize, Deserialize)]
+#[derive(Deserialize)]
 struct Stored {
     address: String,
     token: String,
+}
+
+/// The same, borrowed, so saving copies the token into no other buffer.
+#[derive(Serialize)]
+struct Storing<'a> {
+    address: &'a str,
+    token: &'a str,
+}
+
+#[derive(Serialize)]
+struct Exchanging<'a> {
+    code: &'a str,
+    code_verifier: &'a str,
 }
 
 /// A signed-in account. Implements neither `Debug` nor `Display`.
@@ -304,14 +317,19 @@ struct Exchanged {
 }
 
 fn exchange(address: &str, code: &str, verifier: &str) -> Result<Zeroizing<String>, String> {
-    let body =
-        Zeroizing::new(serde_json::json!({"code": code, "code_verifier": verifier}).to_string());
+    let body = Zeroizing::new(
+        serde_json::to_vec(&Exchanging {
+            code,
+            code_verifier: verifier,
+        })
+        .map_err(|_| "Cannot start the sign-in.")?,
+    );
     let url = format!("https://{}/auth/cli/token", api_host(address));
     let mut response = agent()
         .post(&url)
         .header("content-type", "application/json")
         .header("accept", "application/json")
-        .send(body.as_str())
+        .send(body.as_slice())
         .map_err(|_| "Devin is not reachable.")?;
     let status = response.status().as_u16();
     if status != 200 {
@@ -335,9 +353,9 @@ fn exchange(address: &str, code: &str, verifier: &str) -> Result<Zeroizing<Strin
 
 fn save(data: &Path, account: &Account) -> Result<(), String> {
     let stored = Zeroizing::new(
-        serde_json::to_vec(&Stored {
-            address: account.address.clone(),
-            token: account.token.to_string(),
+        serde_json::to_vec(&Storing {
+            address: &account.address,
+            token: &account.token,
         })
         .map_err(|_| "Cannot save the sign-in.")?,
     );
