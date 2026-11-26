@@ -6,7 +6,6 @@
 //! when pressed. The left dial sets the brightness and resets it when pressed. The right dial
 //! picks a project and shows project names while held.
 
-use std::cmp::Reverse;
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
 
@@ -18,7 +17,7 @@ use crate::focus::Shortcut;
 use crate::input::{Action, Control, Direction, SCREEN_KEYS};
 use crate::render::Tile;
 use crate::status::{self, Status};
-use crate::t3::{Phase, View};
+use crate::t3::{Phase, View, split_key};
 
 const ROW: usize = 3;
 /// Idle and monitoring threads.
@@ -64,6 +63,8 @@ pub struct App {
     last_needing: Option<String>,
     brightness: u8,
     generation: u64,
+    /// When the threads were last ranked. Ended snoozes depend on it.
+    now: Timestamp,
     config: Config,
 }
 
@@ -81,6 +82,7 @@ impl App {
             last_needing: None,
             brightness: brightness.clamp(config::BRIGHTNESS_RANGE.0, config::BRIGHTNESS_RANGE.1),
             generation: 0,
+            now: Timestamp::UNIX_EPOCH,
             config,
         }
     }
@@ -108,6 +110,7 @@ impl App {
         if self.view.phase != Phase::Live {
             return;
         }
+        self.now = now;
         let requests = status::child_requests(&self.view.threads);
         let hide_idle = self.config.preferences.hide_idle;
         let mut ranked: Vec<_> = self
@@ -116,26 +119,24 @@ impl App {
             .values()
             .filter_map(|thread| {
                 let child = requests.get(thread.id.as_str()).copied();
-                if !status::is_relevant(thread, now, child) {
+                if !status::is_relevant(thread, &self.view.threads, now, child) {
                     return None;
                 }
-                let urgency = status::classify(thread, child).urgency();
-                (!hide_idle || urgency < IDLE_URGENCY).then_some((urgency, thread))
+                let status = status::classify(thread, child, now);
+                (!hide_idle || status.urgency() < IDLE_URGENCY).then_some((status, thread))
             })
             .collect();
-        ranked.sort_by(|(a_urgency, a), (b_urgency, b)| {
-            (a_urgency, Reverse(&a.updated_at), &a.id).cmp(&(
-                b_urgency,
-                Reverse(&b.updated_at),
-                &b.id,
-            ))
+        // T3's sidebar order, so the keys start out as T3 lists the threads.
+        ranked.sort_by(|(a_status, a), (b_status, b)| {
+            (status::sidebar_order(a, *a_status), &a.id)
+                .cmp(&(status::sidebar_order(b, *b_status), &b.id))
         });
         self.ranked = ranked
             .into_iter()
-            .map(|(urgency, thread)| Ranked {
+            .map(|(status, thread)| Ranked {
                 entry: Entry {
                     id: thread.id.clone(),
-                    urgency,
+                    urgency: status.urgency(),
                 },
                 project: thread.project_id.clone(),
             })
@@ -273,10 +274,17 @@ impl App {
         }
     }
 
-    fn target(&self, thread_id: String) -> Target {
-        Target {
-            environment_id: self.view.environment_id.clone(),
-            thread_id,
+    /// A remote thread's key names its environment. Any other thread is local.
+    fn target(&self, key: String) -> Target {
+        match split_key(&key) {
+            Some((environment, thread)) => Target {
+                environment_id: environment.to_owned(),
+                thread_id: thread.to_owned(),
+            },
+            None => Target {
+                environment_id: self.view.environment_id.clone(),
+                thread_id: key,
+            },
         }
     }
 
@@ -386,6 +394,7 @@ impl App {
             Some(status::classify(
                 thread,
                 requests.get(thread.id.as_str()).copied(),
+                self.now,
             ))
         })
     }
@@ -488,6 +497,7 @@ mod tests {
                 ("p1".to_owned(), "Alpha".to_owned()),
                 ("p2".to_owned(), "Beta".to_owned()),
             ])),
+            health: Default::default(),
         }
     }
 
@@ -561,6 +571,22 @@ mod tests {
             json!({"id": "archived", "archivedAt": "2030-01-01T00:00:00Z"}),
         ]);
         assert_eq!(press(&mut app, 0), None);
+    }
+
+    #[test]
+    fn a_remote_thread_opens_in_its_own_environment() {
+        let key = crate::t3::merge_key_for_tests("env-remote", "thread:r");
+        let mut app = app_with(&[working(&key), working("local")]);
+        let targets: Vec<(String, String)> = (0..2)
+            .filter_map(|position| {
+                let id = app.thread_on(position)?.to_owned();
+                let target = app.target(id);
+                Some((target.environment_id, target.thread_id))
+            })
+            .collect();
+        assert!(targets.contains(&("env-remote".into(), "thread:r".into())));
+        assert!(targets.contains(&("env-invented".into(), "local".into())));
+        assert!(press(&mut app, 0).is_some());
     }
 
     #[test]

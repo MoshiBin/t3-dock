@@ -3,6 +3,9 @@
 //! The first page is home. An active thread keeps its key there, so nothing moves under the
 //! user's finger. Only an idle thread gives its key up to an active one, and a finished one also
 //! to a thread that needs the user. Later pages follow the ranking, as long as they are off screen.
+//!
+//! The ranking is T3's sidebar order, not urgency, so every thread not yet home gets its chance at
+//! a key, and the one it takes is the lowest ranked it may displace.
 
 use crate::input::SCREEN_KEYS;
 
@@ -67,27 +70,23 @@ impl Board {
                 .filter(|id| rank(id).is_some())
                 .map(str::to_owned)
         });
-        while let Some(best) = ranked
-            .iter()
-            .find(|entry| !home.iter().flatten().any(|id| *id == entry.id))
-        {
-            if let Some(hole) = home.iter_mut().find(|slot| slot.is_none()) {
-                *hole = Some(best.id.clone());
+        for candidate in ranked {
+            if home.iter().flatten().any(|id| *id == candidate.id) {
                 continue;
             }
-            // Ranked best first, so the greatest rank is the least urgent and least recent.
-            let Some((key, worst)) = home
+            if let Some(hole) = home.iter_mut().find(|slot| slot.is_none()) {
+                *hole = Some(candidate.id.clone());
+                continue;
+            }
+            let victim = home
                 .iter()
                 .enumerate()
                 .filter_map(|(key, id)| Some((key, rank(id.as_deref()?)?)))
-                .max_by_key(|&(_, rank)| rank)
-            else {
-                break;
-            };
-            if !may_displace(best.urgency, ranked[worst].urgency) {
-                break;
+                .filter(|&(_, rank)| may_displace(candidate.urgency, ranked[rank].urgency))
+                .max_by_key(|&(_, rank)| rank);
+            if let Some((key, _)) = victim {
+                home[key] = Some(candidate.id.clone());
             }
-            home[key] = Some(best.id.clone());
         }
 
         let rest: Vec<Option<String>> = ranked
@@ -128,6 +127,24 @@ mod tests {
             .into_iter()
             .map(|id| (id, urgency))
             .collect()
+    }
+
+    #[test]
+    fn a_low_ranked_request_still_takes_an_idle_key() {
+        let mut board = Board::default();
+        let mut list: Vec<Entry> = entries(&full(IDLE));
+        board.settle(&list);
+        list.insert(0, entry("newer-idle", IDLE));
+        list.push(entry("ask", NEEDS_USER));
+        board.settle(&list);
+        assert_eq!(shown(&board)[..6], ["a", "b", "c", "d", "e", "ask"]);
+    }
+
+    fn entry(id: &str, urgency: u8) -> Entry {
+        Entry {
+            id: id.to_owned(),
+            urgency,
+        }
     }
 
     #[test]

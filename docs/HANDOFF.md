@@ -144,12 +144,16 @@ Stream items, by `kind`:
 
 Thread fields we need. Parse leniently and ignore the rest:
 
-- Identity: `id, projectId, title, creationSource, lineage.{parentThreadId, relationshipToParent, sideChat}`
+- Identity: `id, projectId, title, creationSource, lineage.{parentThreadId, relationshipToParent, sideChat},
+  delegatedFrom.{environmentId, threadId}`
 - Run: `status, activityRunStatus, latestRunId, activeProviderThreadId, blockedOnThreadWait,
   pendingBackgroundTasks[].{kind, awaited}, lastErrorClass, limitRecovery`
 - Needs you: `pendingRuntimeRequest.{kind, blocking}, pendingGuestMessageCount`, and
   `hasActionableProposedPlan` when `interactionMode == "plan"`
 - Unread: `latestRunCompletedAt > lastVisitedAt`
+- Woke (read from the 0.1.12 nightly sidebar row): `snoozedUntil <= now`, `lastVisitedAt` missing or
+  earlier than `snoozedUntil`, and not settled. It beats Done and loses to failures and live runs.
+  An ended snooze keeps its `snoozedUntil`, and opening the thread sets `lastVisitedAt` to that time.
 - Visibility and order: `archivedAt, deletedAt, settledOverride, snoozedUntil, snoozedAt, pinnedAt, updatedAt`
 
 Read from the server bundle: updates are coalesced per thread and sorted by sequence, so dropping
@@ -161,6 +165,37 @@ refresh with an empty thread list: don't apply it.
 
 beastyrabbit's `src/status.ts` mirrors the T3 sidebar's rules, including parked runs and subagent
 approvals bubbling up to the parent. It is MIT, so it can be ported with attribution.
+
+## Remote environments
+
+Read from the installed desktop bundle (0.1.12 nightly) and tested against three SSH remotes on
+2026-11-23: all three went live next to the local server, and their threads showed on the keys.
+
+- The desktop client lists them in `~/.t3/userdata/connection-catalog.json`:
+  `{version, encryptedCatalog}`, Electron `safeStorage`. On Windows that is Chromium `os_crypt`:
+  base64 of `v10` + 12-byte nonce + AES-256-GCM ciphertext and tag. The key is
+  `os_crypt.encrypted_key` in `%APPDATA%\t3code-v2\Local State` (then `T3 Code (Alpha)`, `t3code`):
+  base64 of `DPAPI` + a DPAPI blob for the current user.
+- Decrypted: `{schemaVersion, targets, profiles, credentials, remoteDpopTokens, disabledEnvironmentIds}`.
+  `SshConnectionTarget.connectionId` names an `SshConnectionProfile` whose `target` is
+  `{alias, hostname, username, port}`. `src/t3/catalog.rs` reads only those, skips disabled ids, and
+  never deserializes `credentials` (the client's bearer tokens, broader than read-only).
+- The client runs `ssh -o BatchMode=... -- user@alias` (the alias, so `~/.ssh/config` applies) and
+  forwards a random local port with `-L 127.0.0.1:<local>:127.0.0.1:<remote>`. It launches or reuses
+  the remote server through `~/.t3/ssh-launch/<key>/`, and **stops it when it closes the tunnel**. So
+  t3-dock never launches anything: it reads the remote's `~/.t3/userdata/server-runtime.json`,
+  requires a loopback origin, and opens its own forward to that port. With the client closed the
+  remote server is usually gone, and that remote shows as offline.
+- The remote CLI: `~/.t3/bin/t3`, else `t3` on PATH, else the client's `~/.t3/ssh-launch/*/run-t3.sh`.
+  `auth session issue --scope orchestration:read --token-only` works there as it does locally.
+- `/.well-known/t3/environment` through the forward must return the catalog's `environmentId`.
+- Remote thread, parent and project ids are prefixed with `<environmentId>\0` in the merged view
+  (`src/t3/merge.rs`), so ids never collide, subagents still fold, and a press opens
+  `t3code://threads/<remote environmentId>/<threadId>`. The renderer routes every thread by
+  `/$environmentId/$threadId`, whatever its environment.
+- `ssh.exe` children join a kill-on-close job, so no tunnel outlives t3-dock.
+- Not supported: relay and bearer (direct URL) targets. Not tested: a remote whose SSH login needs a
+  password, and pressing a remote thread (expected to work, see above).
 
 ## Focus
 
@@ -192,7 +227,7 @@ Found while building:
 
     +--------+--------+--------+
     | agent  | agent  | agent  |  title + status color
-    +--------+--------+--------+  amber needs you, blue working, green done, red failed
+    +--------+--------+--------+  amber needs you or woke, blue working, green done, red failed
     | agent  | agent  | agent  |  press = focus that thread
     +--------+--------+--------+
       [new]  [needs you]  [settle]
@@ -202,8 +237,18 @@ Found while building:
 - Subagents and side chats fold into their parent, as in T3's sidebar
   (`relationshipToParent != "subagent" && sideChat != true` is a top-level thread). A side chat's
   approval or question shows on its direct parent, even a settled one.
+- A thread with `delegatedFrom` (a task delegated from another thread, often in another environment)
+  is top-level in its own server but folds under the delegating thread while that thread is loaded
+  and not archived (0.1.12 nightly, `environment-delegated-under-parent`). Its requests show on
+  that thread, like a side chat's. `src/t3/merge.rs` resolves the delegator's merged key.
 - The title fills a key, so the project shows while the bottom-right dial is held.
 - Keys move only at home (`src/board.rs`). A page the user scrolled to is frozen.
+- Threads rank in T3's sidebar order (0.1.12 nightly, working shelf on): pinned by `pinOrderKey`
+  then newest `createdAt`; working threads by the last send (`latestUserAuthoredMessageAt`, or
+  `latestRunRequestedAt` when absent); the rest by the latest of `createdAt`, `unsettledAt`,
+  `latestRunRequestedAt` and `latestRunCompletedAt`. T3 lists its working shelf below the active
+  list; the deck ranks it above, so working threads get keys first. Urgency only decides which
+  key a thread may take.
 - The three keys and the dials are bindings, the layout above being the default (`src/config.rs`).
   Screen keys are not rebindable.
 

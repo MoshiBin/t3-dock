@@ -39,6 +39,8 @@ impl Tile {
             Status::Starting => ("STARTING", BLUE),
             Status::Working => ("WORKING", BLUE),
             Status::Waiting => ("WAITING", BLUE),
+            // T3 colors a woken thread like a warning.
+            Status::Woke => ("WOKE", AMBER),
             Status::Done => ("DONE", GREEN),
             Status::Monitoring => ("MONITOR", GRAY),
             Status::Idle => ("IDLE", GRAY),

@@ -12,7 +12,7 @@ use serde::{Deserialize, Deserializer};
 pub const PROTOCOL: u64 = 2;
 pub const REQUEST_ID: &str = "shell";
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Thread {
     pub id: String,
@@ -20,6 +20,11 @@ pub struct Thread {
     pub title: Option<String>,
     pub creation_source: Option<String>,
     pub lineage: Option<Lineage>,
+    /// Set on a thread that another thread delegated, possibly from another environment.
+    pub delegated_from: Option<DelegatedFrom>,
+    /// The merged key of the thread that delegated this one. Filled in by the merge, not sent.
+    #[serde(skip)]
+    pub delegated_by: Option<String>,
 
     pub status: Option<String>,
     /// Absent and null differ: older servers omit it, and null means no live run.
@@ -48,9 +53,19 @@ pub struct Thread {
     pub snoozed_until: Option<String>,
     pub snoozed_at: Option<String>,
     pub updated_at: Option<String>,
+
+    // Sidebar order.
+    pub created_at: Option<String>,
+    pub unsettled_at: Option<String>,
+    pub pinned_at: Option<String>,
+    pub pin_order_key: Option<String>,
+    pub latest_run_requested_at: Option<String>,
+    /// Absent and null differ: when absent, T3 dates a send by `latestRunRequestedAt`.
+    #[serde(default, deserialize_with = "present")]
+    pub latest_user_authored_message_at: Option<Option<String>>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct Lineage {
     pub parent_thread_id: Option<String>,
@@ -59,19 +74,27 @@ pub struct Lineage {
     pub side_chat: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DelegatedFrom {
+    pub environment_id: Option<String>,
+    pub thread_id: Option<String>,
+}
+
+#[derive(Clone, Deserialize)]
 pub struct BackgroundTask {
     pub kind: Option<String>,
     pub awaited: Option<bool>,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 pub struct RuntimeRequest {
     pub kind: Option<String>,
     pub blocking: Option<bool>,
 }
 
 /// A field whose presence matters but whose content does not.
+#[derive(Clone)]
 pub struct Present;
 
 impl<'de> Deserialize<'de> for Present {

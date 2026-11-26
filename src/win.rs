@@ -11,6 +11,11 @@ use windows_sys::Win32::Security::Cryptography::{
     CRYPT_INTEGER_BLOB, CRYPTPROTECT_UI_FORBIDDEN, CryptProtectData, CryptUnprotectData,
 };
 use windows_sys::Win32::System::Console::{ATTACH_PARENT_PROCESS, AttachConsole};
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
+};
 use windows_sys::Win32::System::Registry::{
     HKEY_CURRENT_USER, REG_SZ, RRF_RT_REG_SZ, RegDeleteKeyValueW, RegGetValueW, RegSetKeyValueW,
 };
@@ -314,6 +319,45 @@ impl Window {
             accepted
         }
     }
+}
+
+/// A job that ends its processes when t3-dock ends, however it ends. The handle is never closed:
+/// closing it is what kills them, and the system closes it when this process exits.
+fn kill_on_exit_job() -> Option<HANDLE> {
+    static JOB: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    let job = *JOB.get_or_init(|| {
+        // SAFETY: both pointers may be null, and `limits` is valid for the call.
+        unsafe {
+            let job = CreateJobObjectW(null(), null());
+            if job.is_null() {
+                return 0;
+            }
+            let mut limits = JOBOBJECT_EXTENDED_LIMIT_INFORMATION::default();
+            limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            let set = SetInformationJobObject(
+                job,
+                JobObjectExtendedLimitInformation,
+                (&raw const limits).cast(),
+                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+            );
+            if set == 0 {
+                CloseHandle(job);
+                return 0;
+            }
+            job as usize
+        }
+    });
+    (job != 0).then_some(job as HANDLE)
+}
+
+/// Makes a child, such as an SSH tunnel, end with t3-dock even if t3-dock is killed.
+pub fn kill_with_this_process(child: &std::process::Child) -> bool {
+    use std::os::windows::io::AsRawHandle;
+    let Some(job) = kill_on_exit_job() else {
+        return false;
+    };
+    // SAFETY: both handles are valid for the call.
+    unsafe { AssignProcessToJobObject(job, child.as_raw_handle()) != 0 }
 }
 
 /// Presses `keys` in order and releases them in reverse, as one batch that other input cannot

@@ -55,7 +55,7 @@ pub fn server_address(t3_home: &Path) -> Result<SocketAddr, Failure> {
 
 /// Accepts only plain HTTP to a loopback address. Parsing to a socket address, not a URL, leaves
 /// no room for credentials, paths or host names that resolve elsewhere.
-fn loopback(origin: &str) -> Option<SocketAddr> {
+pub(super) fn loopback(origin: &str) -> Option<SocketAddr> {
     let authority = origin.strip_prefix("http://")?;
     let authority = authority.strip_suffix('/').unwrap_or(authority);
     let address: SocketAddr = match authority.strip_prefix("localhost:") {
@@ -80,6 +80,10 @@ impl Api {
             .build()
             .into();
         Self { agent, address }
+    }
+
+    pub fn address(&self) -> SocketAddr {
+        self.address
     }
 
     fn url(&self, path: &str) -> String {

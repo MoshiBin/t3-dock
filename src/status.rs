@@ -3,6 +3,7 @@
 //! The rules are ported from `src/status.ts` in beastyrabbit/opendeck-t3-code-status dc27f17
 //! (MIT, see THIRD_PARTY.md), which mirrors T3 Code's own sidebar.
 
+use std::cmp::Reverse;
 use std::collections::{HashMap, HashSet};
 
 use jiff::Timestamp;
@@ -21,6 +22,8 @@ pub enum Status {
     /// Live, but waiting on another thread or on background work.
     Waiting,
     Monitoring,
+    /// A snooze ended and the user has not opened the thread since.
+    Woke,
     /// Finished since the user last opened the thread.
     Done,
     Idle,
@@ -33,7 +36,7 @@ impl Status {
             Self::Approval | Self::Input | Self::Plan => 0,
             Self::Failed | Self::Limited => 1,
             Self::Starting | Self::Working | Self::Waiting => 2,
-            Self::Done => 3,
+            Self::Woke | Self::Done => 3,
             Self::Monitoring | Self::Idle => 4,
         }
     }
@@ -162,6 +165,19 @@ pub fn is_child(thread: &Thread) -> bool {
     is_subagent(thread) || is_side_chat(thread)
 }
 
+/// The thread that delegated this one, while T3 shows it there: present and not archived.
+/// Otherwise T3's sidebar lists the delegated thread on its own.
+fn delegator<'a>(thread: &Thread, threads: &'a Threads) -> Option<&'a Thread> {
+    threads
+        .get(thread.delegated_by.as_deref()?)
+        .map(|parent| &**parent)
+        .filter(|parent| parent.archived_at.is_none())
+}
+
+fn is_folded(thread: &Thread, threads: &Threads) -> bool {
+    is_child(thread) || delegator(thread, threads).is_some()
+}
+
 fn parent_id(thread: &Thread) -> Option<&str> {
     thread.lineage.as_ref()?.parent_thread_id.as_deref()
 }
@@ -170,7 +186,7 @@ fn parent_id(thread: &Thread) -> Option<&str> {
 ///
 /// A live subagent's approval reaches every parent up to the top thread. A coordinator answers
 /// its subagent's questions and provider-native subagents ask on their parent, so neither is
-/// flagged. A side chat's approval or question reaches its direct parent.
+/// flagged. A side chat's or a delegated thread's approval or question reaches its direct parent.
 pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
     let mut flagged = HashMap::new();
     let mut flag = |id, status| {
@@ -180,7 +196,8 @@ pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
         }
     };
     for child in threads.values() {
-        if is_side_chat(child) {
+        let delegated = delegator(child, threads).map(|parent| parent.id.as_str());
+        if is_side_chat(child) || delegated.is_some() {
             let request = child
                 .pending_runtime_request
                 .as_ref()
@@ -190,7 +207,7 @@ pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
                 Some("user_input") => Status::Input,
                 Some(_) => Status::Approval,
             };
-            if let Some(parent) = parent_id(child) {
+            if let Some(parent) = delegated.or_else(|| parent_id(child)) {
                 flag(parent, status);
             }
             continue;
@@ -227,8 +244,18 @@ pub fn child_requests(threads: &Threads) -> HashMap<&str, Status> {
     flagged
 }
 
+// T3's sidebar row: a snooze that ran out, unless the thread was opened since or settled.
+fn has_unseen_wake(thread: &Thread, now: Timestamp) -> bool {
+    let Some(woke) = millis(thread.snoozed_until.as_deref()) else {
+        return false;
+    };
+    woke <= now.as_millisecond()
+        && thread.settled_override.as_deref() != Some("settled")
+        && millis(thread.last_visited_at.as_deref()).is_none_or(|visited| visited < woke)
+}
+
 /// `child` is what the thread's children ask of it, from `child_requests`.
-pub fn classify(thread: &Thread, child: Option<Status>) -> Status {
+pub fn classify(thread: &Thread, child: Option<Status>, now: Timestamp) -> Status {
     if child == Some(Status::Approval) || has_pending_approval(thread) {
         return Status::Approval;
     }
@@ -267,6 +294,9 @@ pub fn classify(thread: &Thread, child: Option<Status>) -> Status {
             Status::Working
         };
     }
+    if has_unseen_wake(thread, now) {
+        return Status::Woke;
+    }
     if has_unseen_completion(thread) {
         return Status::Done;
     }
@@ -278,6 +308,69 @@ pub fn classify(thread: &Thread, child: Option<Status>) -> Status {
         return Status::Monitoring;
     }
     Status::Idle
+}
+
+/// Where T3's sidebar puts a shown thread, from the top. Read from the 0.1.12 nightly sidebar with
+/// its working shelf on, the default: pinned threads, then the active list, then the working shelf.
+/// The deck puts working threads before the active list, so they always get keys first.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Section {
+    Pinned,
+    Working,
+    Active,
+}
+
+pub fn section(thread: &Thread, status: Status) -> Section {
+    if thread.pinned_at.is_some() {
+        Section::Pinned
+    } else if matches!(status, Status::Starting | Status::Working | Status::Waiting) {
+        Section::Working
+    } else {
+        Section::Active
+    }
+}
+
+fn latest(values: &[Option<&str>]) -> i64 {
+    values
+        .iter()
+        .filter_map(|value| millis(*value))
+        .max()
+        .unwrap_or(0)
+}
+
+/// Sorts threads as T3's sidebar does within each section. Smaller comes first.
+pub fn sidebar_order(
+    thread: &Thread,
+    status: Status,
+) -> (Section, bool, Option<&str>, Reverse<i64>) {
+    let section = section(thread, status);
+    let created = thread.created_at.as_deref();
+    let completed = thread
+        .latest_run_completed_at
+        .as_ref()
+        .and_then(Option::as_deref);
+    let requested = thread.latest_run_requested_at.as_deref();
+    match section {
+        // Hand-ordered pins first, then the newest pins.
+        Section::Pinned => {
+            let key = thread.pin_order_key.as_deref();
+            (section, key.is_none(), key, Reverse(latest(&[created])))
+        }
+        // The last thing the user sent.
+        Section::Working => {
+            let sent = match &thread.latest_user_authored_message_at {
+                Some(sent) => sent.as_deref(),
+                None => requested,
+            };
+            (section, false, None, Reverse(latest(&[created, sent])))
+        }
+        // The last start or finish of a run, or the thread's creation or un-settling.
+        Section::Active => {
+            let unsettled = thread.unsettled_at.as_deref();
+            let time = latest(&[created, unsettled, requested, completed]);
+            (section, false, None, Reverse(time))
+        }
+    }
 }
 
 // Only a request for the user or a fresh failure ends a snooze early.
@@ -308,8 +401,13 @@ fn is_snoozed(thread: &Thread, now: Timestamp, child_request: bool) -> bool {
 }
 
 /// Whether a thread deserves a key.
-pub fn is_relevant(thread: &Thread, now: Timestamp, child: Option<Status>) -> bool {
-    if thread.archived_at.is_some() || thread.deleted_at.is_some() || is_child(thread) {
+pub fn is_relevant(
+    thread: &Thread,
+    threads: &Threads,
+    now: Timestamp,
+    child: Option<Status>,
+) -> bool {
+    if thread.archived_at.is_some() || thread.deleted_at.is_some() || is_folded(thread, threads) {
         return false;
     }
     let child_request = child.is_some();
@@ -343,16 +441,16 @@ mod tests {
         serde_json::from_value(value).ok().unwrap()
     }
 
+    fn now() -> Timestamp {
+        "2030-01-01T12:00:00Z".parse().unwrap()
+    }
+
     fn status(fields: Value) -> Status {
-        classify(&thread(fields), None)
+        classify(&thread(fields), None, now())
     }
 
     fn relevant(fields: Value) -> bool {
-        is_relevant(
-            &thread(fields),
-            "2030-01-01T12:00:00Z".parse().unwrap(),
-            None,
-        )
+        is_relevant(&thread(fields), &Threads::new(), now(), None)
     }
 
     fn request(kind: &str) -> Value {
@@ -463,6 +561,59 @@ mod tests {
     }
 
     #[test]
+    fn woke_means_a_snooze_ended_unseen() {
+        let woke = json!({"snoozedUntil": AFTER, "lastVisitedAt": BEFORE});
+        assert_eq!(status(woke.clone()), Status::Woke);
+        assert_eq!(status(json!({"snoozedUntil": AFTER})), Status::Woke);
+        let seen = json!({"snoozedUntil": BEFORE, "lastVisitedAt": AFTER});
+        assert_eq!(status(seen), Status::Idle);
+        let still_snoozed = json!({"snoozedUntil": "2030-01-01T13:00:00Z"});
+        assert_eq!(status(still_snoozed), Status::Idle);
+        let settled = json!({"snoozedUntil": AFTER, "settledOverride": "settled"});
+        assert_eq!(status(settled), Status::Idle);
+        let unread = json!({"snoozedUntil": AFTER, "lastVisitedAt": BEFORE,
+                            "latestRunCompletedAt": AFTER});
+        assert_eq!(status(unread), Status::Woke);
+        let failed = json!({"snoozedUntil": AFTER, "status": "failed"});
+        assert_eq!(status(failed), Status::Failed);
+        let running = json!({"snoozedUntil": AFTER, "status": "running"});
+        assert_eq!(status(running), Status::Working);
+    }
+
+    #[test]
+    fn sidebar_order_follows_t3() {
+        let order = |fields: Value| {
+            let thread = thread(fields);
+            let status = classify(&thread, None, now());
+            let (section, unkeyed, key, time) = sidebar_order(&thread, status);
+            (section, unkeyed, key.map(str::to_owned), time)
+        };
+        let pinned = order(json!({"pinnedAt": BEFORE, "status": "running"}));
+        let working = order(json!({"status": "running", "createdAt": BEFORE}));
+        let old = order(json!({"createdAt": BEFORE}));
+        let finished = order(json!({"createdAt": BEFORE, "latestRunCompletedAt": AFTER}));
+        let unsettled = order(json!({"createdAt": BEFORE, "unsettledAt": AFTER}));
+        assert!(pinned < working && working < finished && finished < old);
+        assert_eq!(finished.3, unsettled.3);
+
+        let keyed = order(json!({"pinnedAt": BEFORE, "pinOrderKey": "b"}));
+        let first = order(json!({"pinnedAt": BEFORE, "pinOrderKey": "a"}));
+        assert!(first < keyed && keyed < pinned);
+
+        let sent = order(
+            json!({"status": "running", "latestUserAuthoredMessageAt": AFTER,
+                                "latestRunRequestedAt": BEFORE}),
+        );
+        let requested = order(json!({"status": "running", "latestRunRequestedAt": AFTER}));
+        let agent_only = order(
+            json!({"status": "running", "latestUserAuthoredMessageAt": null,
+                                      "latestRunRequestedAt": AFTER}),
+        );
+        assert_eq!(sent.3, requested.3);
+        assert!(sent < agent_only);
+    }
+
+    #[test]
     fn visibility() {
         assert!(relevant(json!({})));
         assert!(!relevant(json!({"archivedAt": BEFORE})));
@@ -556,7 +707,7 @@ mod tests {
             HashMap::from([("middle", Status::Approval), ("top", Status::Approval)])
         );
         assert_eq!(
-            classify(&threads["top"], requests.get("top").copied()),
+            classify(&threads["top"], requests.get("top").copied(), now()),
             Status::Approval
         );
     }
@@ -600,10 +751,45 @@ mod tests {
             requests,
             HashMap::from([("asked", Status::Input), ("approve", Status::Approval)])
         );
-        let now = "2030-01-01T12:00:00Z".parse().unwrap();
         let asked = &threads["asked"];
-        assert!(is_relevant(asked, now, requests.get("asked").copied()));
-        assert_eq!(classify(asked, Some(Status::Input)), Status::Input);
-        assert!(!is_relevant(&threads["question"], now, None));
+        let shown = is_relevant(asked, &threads, now(), requests.get("asked").copied());
+        assert!(shown);
+        assert_eq!(classify(asked, Some(Status::Input), now()), Status::Input);
+        assert!(!is_relevant(&threads["question"], &threads, now(), None));
+    }
+
+    fn delegated(id: &str, by: &str, extra: Value) -> Thread {
+        let mut fields = json!({"id": id});
+        for (key, field) in extra.as_object().unwrap() {
+            fields[key] = field.clone();
+        }
+        let mut thread = thread(fields);
+        thread.delegated_by = Some(by.to_owned());
+        thread
+    }
+
+    #[test]
+    fn delegated_threads_fold_into_a_present_delegator() {
+        let threads = index(vec![
+            thread(json!({"id": "boss", "settledOverride": "settled"})),
+            delegated("task", "boss", json!({})),
+            delegated(
+                "asks",
+                "boss",
+                json!({"pendingRuntimeRequest": request("command")}),
+            ),
+            thread(json!({"id": "archived-boss", "archivedAt": BEFORE})),
+            delegated("orphan", "archived-boss", json!({})),
+            delegated("far", "not-loaded", json!({})),
+        ]);
+        let requests = child_requests(&threads);
+        assert_eq!(requests, HashMap::from([("boss", Status::Approval)]));
+        let shown =
+            |id: &str| is_relevant(&threads[id], &threads, now(), requests.get(id).copied());
+        assert!(!shown("task"));
+        assert!(!shown("asks"));
+        assert!(shown("boss"));
+        assert!(shown("orphan"));
+        assert!(shown("far"));
     }
 }

@@ -193,7 +193,7 @@ async fn survives_a_restart_on_another_port_and_a_renewed_token() {
     let first = Fake::start("thread:first").await;
     first.publish(&home);
     let (views_tx, mut views) = watch::channel(View::default());
-    let client = tokio::spawn(run(home.clone(), data.clone(), views_tx));
+    let client = tokio::spawn(run(home.clone(), data.clone(), Source::Local, views_tx));
     until(&mut views, |view| has_updated(view, "thread:first")).await;
 
     first.quit().await;
