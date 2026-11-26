@@ -28,3 +28,9 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## egui default fonts
+
+The settings window uses egui's default fonts, compiled into the exe by `epaint_default_fonts`:
+Ubuntu Light (Ubuntu Font Licence 1.0), Hack (MIT), Noto Emoji (SIL OFL 1.1) and emoji-icon-font
+(MIT). Their license texts ship with that crate.

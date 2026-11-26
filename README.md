@@ -30,6 +30,8 @@ Close MiraBox's own app, then start `t3-dock.exe`. It has no window, only a tray
     +--------+--------+--------+
       [new]  [needs you]  [settle]
 
+By default:
+
 | Control | Turn | Press |
 |---|---|---|
 | Top dial | Scroll by a row | Home, all projects |
@@ -46,6 +48,12 @@ The keys under the screens:
 New and settle press T3's default shortcuts, so they don't work if you changed those, or while T3's
 terminal has focus. They are typed only while T3 is in front.
 
+**Settings** in the tray menu opens a window where you can give the three keys and the three dials
+other actions, reverse a dial, and change preferences: the reset brightness, the brightness per
+dial click, how long messages show, hiding idle threads and start at login. Save applies them to the
+running dock at once. The screen keys always open their thread. Settings are kept in
+`%LOCALAPPDATA%\t3-dock\config.json`.
+
 | Color | Meaning |
 |---|---|
 | Amber | Needs you: approval, question or plan |
@@ -58,11 +66,12 @@ On the first page an active thread keeps its key. An idle one gives its key to a
 active, and a finished one also to a thread that needs you. Other pages don't change while you look at
 them. Subagents fold into their parent.
 
-The tray menu shows the connection state, sets up or renews the token, opens the log, turns start at
-login on or off (off by default) and quits. The same exe has two subcommands:
+The tray menu shows the connection state, opens the settings, sets up or renews the token, opens the
+log, turns start at login on or off (off by default) and quits. The same exe has three subcommands:
 
-    t3-dock auth    create or check the T3 tokens
-    t3-dock stop    stop the running instance and blank the keys
+    t3-dock settings   open the settings window
+    t3-dock auth       create or check the T3 tokens
+    t3-dock stop       stop the running instance and blank the keys
 
 It is a GUI program, so PowerShell doesn't wait for it. Add `| Out-Host` to wait.
 

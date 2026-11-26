@@ -3,11 +3,14 @@
 
 mod app;
 mod board;
+mod config;
 mod device;
 mod focus;
 mod input;
 mod log;
+mod login;
 mod render;
+mod settings;
 mod status;
 mod t3;
 mod tray;
@@ -26,14 +29,16 @@ use crate::app::App;
 use crate::log::log;
 
 const USAGE: &str = "usage:
-  t3-dock [run]    show threads on the N3
-  t3-dock auth     create or check the read-only T3 token
-  t3-dock stop     stop the running instance";
+  t3-dock [run]      show threads on the N3
+  t3-dock settings   rebind the controls and change preferences
+  t3-dock auth       create or check the read-only T3 token
+  t3-dock stop       stop the running instance";
 
 const RESUME_GAP: Duration = Duration::from_secs(60);
 
 enum Cli {
     Run,
+    Settings,
     Auth,
     Stop,
 }
@@ -41,6 +46,7 @@ enum Cli {
 fn parse(args: &[&str]) -> Option<Cli> {
     match args {
         [] | ["run"] => Some(Cli::Run),
+        ["settings"] => Some(Cli::Settings),
         ["auth"] => Some(Cli::Auth),
         ["stop"] => Some(Cli::Stop),
         _ => None,
@@ -83,7 +89,7 @@ fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let args: Vec<&str> = args.iter().map(String::as_str).collect();
     let cli = parse(&args);
-    if !matches!(cli, Some(Cli::Run)) {
+    if !matches!(cli, Some(Cli::Run | Cli::Settings)) {
         win::attach_parent_console();
     }
     let Some(cli) = cli else {
@@ -116,6 +122,7 @@ fn execute(cli: Cli) -> Result<(), String> {
     }));
 
     match cli {
+        Cli::Settings => settings::run(&data),
         Cli::Auth => t3::auth::setup(&t3_home, &data),
         Cli::Stop => stop(),
         Cli::Run => {
@@ -130,11 +137,11 @@ fn execute(cli: Cli) -> Result<(), String> {
     }
 }
 
-fn saved_brightness(file: &Path) -> u8 {
+fn saved_brightness(file: &Path, default: u8) -> u8 {
     std::fs::read_to_string(file)
         .ok()
         .and_then(|text| text.trim().parse().ok())
-        .unwrap_or(app::DEFAULT_BRIGHTNESS)
+        .unwrap_or(default)
 }
 
 fn stop() -> Result<(), String> {
@@ -158,7 +165,10 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     focus::describe();
 
     let brightness_file = data.join("brightness");
-    let mut app = App::new(saved_brightness(&brightness_file));
+    let mut settings = config::Watch::new(data.join(config::FILE));
+    let config = config::Config::load(settings.path());
+    let brightness = saved_brightness(&brightness_file, config.preferences.default_brightness);
+    let mut app = App::new(brightness, config);
     let mut saved = app.brightness();
     let (screen_tx, screen_rx) = watch::channel(app.screen());
     let (message_tx, mut messages) = mpsc::channel(64);
@@ -195,6 +205,10 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                     break Ok(());
                 }
                 app.tick(Instant::now());
+                if let Some(config) = settings.changed() {
+                    log!("config: reloaded");
+                    app.set_config(config, Timestamp::now());
+                }
                 // Written here, not on every click of the dial.
                 if app.brightness() != saved {
                     saved = app.brightness();
