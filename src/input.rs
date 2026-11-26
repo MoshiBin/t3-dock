@@ -1,10 +1,11 @@
-//! Decodes the N3's input reports.
+//! Decodes the input reports of a Stream Dock.
 //!
-//! Codes are from MiraBox's MIT SDK (`StreamDockN3.py`). Byte offsets exclude the HID report id.
+//! Codes are from MiraBox's MIT SDK (`StreamDockN3.py`, `StreamDock293sV3.py`). Byte offsets
+//! exclude the HID report id.
 
 use std::fmt;
 
-pub const SCREEN_KEYS: usize = 6;
+use crate::model::Model;
 
 const CODE: usize = 9;
 const STATE: usize = 10;
@@ -24,7 +25,7 @@ pub enum Direction {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Control {
-    /// A screen key, 0-based, with the same index as its image.
+    /// A screen key, 0-based in reading order.
     Screen(usize),
     /// A key without a screen, 0-based.
     Button(usize),
@@ -47,7 +48,7 @@ pub struct Event {
 }
 
 /// `None` for anything that is not an input, such as a write acknowledgement.
-pub fn decode(report: &[u8]) -> Option<Event> {
+pub fn decode(report: &[u8], model: Model) -> Option<Event> {
     if !report.starts_with(b"ACK") {
         return None;
     }
@@ -68,8 +69,22 @@ pub fn decode(report: &[u8]) -> Option<Event> {
         0 => Action::Up(control),
         _ => Action::Unknown,
     };
+    if let Some(key) = model.screen_key(code) {
+        let action = press(Control::Screen(key));
+        return Some(Event {
+            code,
+            state,
+            action,
+        });
+    }
+    if !model.has_controls() {
+        return Some(Event {
+            code,
+            state,
+            action: Action::Unknown,
+        });
+    }
     let action = match code {
-        0x01..=0x06 => press(Control::Screen(usize::from(code - 1))),
         0x25 => press(Control::Button(0)),
         0x30 => press(Control::Button(1)),
         0x31 => press(Control::Button(2)),
@@ -128,7 +143,7 @@ mod tests {
     }
 
     fn action(code: u8, state: u8) -> Action {
-        decode(&report(code, state)).unwrap().action
+        decode(&report(code, state), Model::N3).unwrap().action
     }
 
     #[test]
@@ -171,17 +186,31 @@ mod tests {
     fn surprises_are_kept_for_the_log() {
         assert_eq!(action(0x07, 1), Action::Unknown);
         assert_eq!(action(0x01, 2), Action::Unknown);
-        let event = decode(&report(0x7f, 9)).unwrap();
+        let event = decode(&report(0x7f, 9), Model::N3).unwrap();
         assert_eq!(event.to_string(), "code=7f state=9 unknown");
     }
 
     #[test]
     fn other_reports_are_not_inputs() {
-        assert_eq!(decode(&report(0, 0)), None);
-        assert_eq!(decode(b"ACK\0\0OK"), None);
-        assert_eq!(decode(&[0; 512]), None);
+        assert_eq!(decode(&report(0, 0), Model::N3), None);
+        assert_eq!(decode(b"ACK\0\0OK", Model::N3), None);
+        assert_eq!(decode(&[0; 512], Model::N3), None);
         let mut with_report_id = vec![0];
         with_report_id.extend(report(1, 1));
-        assert_eq!(decode(&with_report_id), None);
+        assert_eq!(decode(&with_report_id, Model::N3), None);
+    }
+
+    #[test]
+    fn the_293s_has_fifteen_keys_and_no_dials() {
+        let action = |code, state| {
+            decode(&report(code, state), Model::Dock293sV3)
+                .unwrap()
+                .action
+        };
+        // The device counts from the top-right key, down each column.
+        assert_eq!(action(0x01, 1), Action::Down(Control::Screen(4)));
+        assert_eq!(action(0x0f, 0), Action::Up(Control::Screen(10)));
+        assert_eq!(action(0x25, 1), Action::Unknown);
+        assert_eq!(action(0x50, 0), Action::Unknown);
     }
 }

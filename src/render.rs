@@ -1,4 +1,4 @@
-//! Draws key tiles, upright. The device layer rotates them.
+//! Draws key tiles, upright and at any square size. The device layer rotates them.
 
 use cosmic_text::{
     Align, Attrs, Buffer, Color, Family, FontSystem, Metrics, Shaping, SwashCache, Weight,
@@ -7,8 +7,9 @@ use image::{Rgb, RgbImage};
 
 use crate::status::Status;
 
+/// The size the layout below is in. Other sizes scale it.
 pub const SIZE: u32 = 64;
-const BANNER: u32 = 15;
+const BANNER: f32 = 15.0;
 
 const DARK: [u8; 3] = [12, 12, 16];
 const LIGHT: [u8; 3] = [240, 240, 240];
@@ -84,6 +85,24 @@ impl Tile {
         }
     }
 
+    /// A count on the side display, such as how many threads need the user.
+    /// Gray when the count is zero.
+    pub fn count(banner: &str, count: usize, accent: Accent) -> Self {
+        let accent = match accent {
+            _ if count == 0 => GRAY,
+            Accent::Plain => GRAY,
+            Accent::Attention => AMBER,
+            Accent::Busy => BLUE,
+        };
+        Self {
+            banner: banner.into(),
+            body: count.to_string(),
+            accent,
+            large: true,
+            pressed: false,
+        }
+    }
+
     /// A numbered tile that shows image index and which way is up.
     #[cfg(test)]
     pub fn numbered(number: usize) -> Self {
@@ -97,12 +116,20 @@ impl Tile {
     }
 }
 
+/// The colors a count may have when it is not zero.
+#[derive(Clone, Copy)]
+pub enum Accent {
+    Plain,
+    Attention,
+    Busy,
+}
+
 struct Text<'a> {
     value: &'a str,
     size: f32,
     line_height: f32,
     lines: usize,
-    top: i32,
+    top: f32,
     color: [u8; 3],
     weight: Weight,
     align: Option<Align>,
@@ -121,23 +148,27 @@ impl Renderer {
         }
     }
 
-    pub fn render(&mut self, tile: &Tile) -> RgbImage {
+    /// A `size` by `size` image.
+    pub fn render(&mut self, tile: &Tile, size: u32) -> RgbImage {
         let (background, ink) = if tile.pressed {
             (LIGHT, DARK)
         } else {
             (DARK, LIGHT)
         };
-        let mut image = RgbImage::from_fn(SIZE, SIZE, |_, y| {
-            Rgb(if y < BANNER { tile.accent } else { background })
+        let scale = size as f32 / SIZE as f32;
+        let banner = (BANNER * scale).round() as u32;
+        let mut image = RgbImage::from_fn(size, size, |_, y| {
+            Rgb(if y < banner { tile.accent } else { background })
         });
         self.draw(
             &mut image,
+            scale,
             Text {
                 value: &tile.banner,
                 size: 10.0,
                 line_height: 13.0,
                 lines: 1,
-                top: 1,
+                top: 1.0,
                 color: DARK,
                 weight: Weight::BOLD,
                 align: Some(Align::Center),
@@ -150,12 +181,13 @@ impl Renderer {
         };
         self.draw(
             &mut image,
+            scale,
             Text {
                 value: &tile.body,
                 size,
                 line_height,
                 lines,
-                top: 17,
+                top: 17.0,
                 color: ink,
                 weight,
                 align,
@@ -164,10 +196,14 @@ impl Renderer {
         image
     }
 
-    fn draw(&mut self, image: &mut RgbImage, text: Text<'_>) {
-        const MARGIN: i32 = 3;
-        let mut buffer = Buffer::new(&mut self.fonts, Metrics::new(text.size, text.line_height));
-        buffer.set_size(Some((SIZE as i32 - 2 * MARGIN) as f32), None);
+    /// Draws `text`, whose sizes are for a 64-pixel key, scaled to the image.
+    fn draw(&mut self, image: &mut RgbImage, scale: f32, text: Text<'_>) {
+        let size = image.width() as i32;
+        let margin = (3.0 * scale).round() as i32;
+        let top = (text.top * scale).round() as i32;
+        let metrics = Metrics::new(text.size * scale, text.line_height * scale);
+        let mut buffer = Buffer::new(&mut self.fonts, metrics);
+        buffer.set_size(Some((size - 2 * margin) as f32), None);
         let attrs = Attrs::new()
             .family(Family::Name("Segoe UI"))
             .weight(text.weight);
@@ -190,8 +226,8 @@ impl Renderer {
                 let source = [color.r(), color.g(), color.b()];
                 for y in y..y + height as i32 {
                     for x in x..x + width as i32 {
-                        let (x, y) = (x + MARGIN, y + text.top);
-                        if !(0..SIZE as i32).contains(&x) || !(0..SIZE as i32).contains(&y) {
+                        let (x, y) = (x + margin, y + top);
+                        if !(0..size).contains(&x) || !(0..size).contains(&y) {
                             continue;
                         }
                         let pixel = image.get_pixel_mut(x as u32, y as u32);
@@ -251,10 +287,13 @@ mod tests {
 
     #[test]
     fn tile_is_key_sized_with_the_banner_on_top() {
-        let image = Renderer::new().render(&Tile::thread("Invented title", Status::Failed));
-        assert_eq!(image.dimensions(), (SIZE, SIZE));
-        assert_eq!(image.get_pixel(0, 0).0, RED);
-        assert_eq!(image.get_pixel(0, SIZE - 1).0, DARK);
+        let mut renderer = Renderer::new();
+        for size in [SIZE, 96] {
+            let image = renderer.render(&Tile::thread("Invented title", Status::Failed), size);
+            assert_eq!(image.dimensions(), (size, size));
+            assert_eq!(image.get_pixel(0, 0).0, RED);
+            assert_eq!(image.get_pixel(0, size - 1).0, DARK);
+        }
     }
 
     #[test]
@@ -286,7 +325,7 @@ mod tests {
         let mut renderer = Renderer::new();
         let mut sheet = RgbImage::from_pixel(3 * 208 + 16, 2 * 208 + 16, Rgb([55, 55, 58]));
         for (i, tile) in tiles.iter().enumerate() {
-            let key = renderer.render(tile);
+            let key = renderer.render(tile, SIZE);
             let zoomed =
                 image::imageops::resize(&key, 192, 192, image::imageops::FilterType::Nearest);
             let (x, y) = (16 + i % 3 * 208, 16 + i / 3 * 208);

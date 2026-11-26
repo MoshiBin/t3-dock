@@ -5,6 +5,9 @@
 //! that needs the user, and settle the thread T3 shows. The top dial scrolls a row and goes home
 //! when pressed. The left dial sets the brightness and resets it when pressed. The right dial
 //! picks a project and shows project names while held.
+//!
+//! A model with a side display, such as the 293S, shows notices and counts there instead of on
+//! key 1. It has no other controls, so its keys only open threads.
 
 use std::collections::{BTreeSet, HashMap};
 use std::time::{Duration, Instant};
@@ -14,18 +17,24 @@ use jiff::Timestamp;
 use crate::board::{Board, Entry, NEEDS_USER};
 use crate::config::{self, Config, Press, Turn};
 use crate::focus::Shortcut;
-use crate::input::{Action, Control, Direction, SCREEN_KEYS};
-use crate::render::Tile;
+use crate::input::{Action, Control, Direction};
+use crate::model::{Layout, Model};
+use crate::render::{Accent, Tile};
 use crate::status::{self, Status};
 use crate::t3::{Phase, View, split_key};
 
-const ROW: usize = 3;
 /// Idle and monitoring threads.
 const IDLE_URGENCY: u8 = 4;
+const WORKING_URGENCY: u8 = 2;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct Screen {
-    pub tiles: [Tile; SCREEN_KEYS],
+    /// The model the tiles are for. A device of another model waits for its own.
+    pub layout: Layout,
+    /// The screen keys in reading order.
+    pub tiles: Vec<Tile>,
+    /// The side display, from the top.
+    pub side: Vec<Tile>,
     pub brightness: u8,
     /// A change makes the device redraw everything, as after sleep.
     pub generation: u64,
@@ -56,9 +65,10 @@ pub struct App {
     boards: HashMap<Option<String>, Board>,
     filter: Option<String>,
     offset: usize,
-    held: [bool; SCREEN_KEYS],
+    layout: Layout,
+    held: Vec<bool>,
     showing_projects: bool,
-    /// Briefly covers key 1.
+    /// Briefly covers key 1, or the top of the side display.
     message: Option<(Tile, Instant)>,
     last_needing: Option<String>,
     brightness: u8,
@@ -70,13 +80,15 @@ pub struct App {
 
 impl App {
     pub fn new(brightness: u8, config: Config) -> Self {
+        let layout = Model::N3.layout();
         Self {
+            layout,
             view: View::default(),
             ranked: Vec::new(),
             boards: HashMap::new(),
             filter: None,
             offset: 0,
-            held: [false; SCREEN_KEYS],
+            held: vec![false; layout.keys],
             showing_projects: false,
             message: None,
             last_needing: None,
@@ -93,6 +105,24 @@ impl App {
         // The control holding the names down may do something else now.
         self.showing_projects = false;
         self.refresh(now);
+    }
+
+    /// The connected device's layout. Another model starts over from home.
+    pub fn set_layout(&mut self, layout: Layout) {
+        if layout == self.layout {
+            return;
+        }
+        self.layout = layout;
+        self.boards.clear();
+        self.offset = 0;
+        self.held = vec![false; layout.keys];
+        self.message = None;
+        self.lay_out();
+    }
+
+    /// Whether messages cover key 1, because there is no side display.
+    fn covers_key(&self) -> bool {
+        self.layout.side == 0
     }
 
     fn message_time(&self) -> Duration {
@@ -155,7 +185,11 @@ impl App {
             .filter(|ranked| self.filter.is_none() || ranked.project == self.filter)
             .map(|ranked| ranked.entry.clone())
             .collect();
-        let board = self.boards.entry(self.filter.clone()).or_default();
+        let Layout { keys, columns, .. } = self.layout;
+        let board = self
+            .boards
+            .entry(self.filter.clone())
+            .or_insert_with(|| Board::new(keys, columns));
         if self.offset > 0 {
             board.freeze(&entries);
             self.offset = self.offset.min(board.last_offset());
@@ -170,11 +204,11 @@ impl App {
     }
 
     pub fn release_all(&mut self) {
-        self.held = [false; SCREEN_KEYS];
+        self.held.fill(false);
         self.showing_projects = false;
     }
 
-    /// Expires the message on key 1.
+    /// Expires the message.
     pub fn tick(&mut self, now: Instant) {
         if self
             .message
@@ -193,17 +227,21 @@ impl App {
         self.tick(now);
         match action {
             Action::Down(Control::Screen(key)) => {
-                if std::mem::replace(&mut self.held[key], true) {
+                if std::mem::replace(self.held.get_mut(key)?, true) {
                     return None;
                 }
                 // A covered key doesn't open the thread that is hidden under the message.
-                if key == 0 && self.message.take().is_some() {
+                if key == 0 && self.covers_key() && self.message.take().is_some() {
                     return None;
                 }
                 let id = self.thread_on(key)?.to_owned();
                 return Some(Command::Open(self.target(id)));
             }
-            Action::Up(Control::Screen(key)) => self.held[key] = false,
+            Action::Up(Control::Screen(key)) => {
+                if let Some(held) = self.held.get_mut(key) {
+                    *held = false;
+                }
+            }
             Action::Down(control) => return self.press(self.binding(control), now),
             Action::Up(control) => {
                 if self.binding(control) == Press::ShowProjects {
@@ -233,10 +271,10 @@ impl App {
             Press::Nothing => {}
             Press::NewThread => return Some(Command::Send(Shortcut::NewThread)),
             Press::Settle => return Some(Command::Send(Shortcut::Settle)),
-            Press::PreviousPage => self.scroll(Direction::Left, SCREEN_KEYS),
-            Press::NextPage => self.scroll(Direction::Right, SCREEN_KEYS),
-            Press::PreviousRow => self.scroll(Direction::Left, ROW),
-            Press::NextRow => self.scroll(Direction::Right, ROW),
+            Press::PreviousPage => self.scroll(Direction::Left, self.layout.keys),
+            Press::NextPage => self.scroll(Direction::Right, self.layout.keys),
+            Press::PreviousRow => self.scroll(Direction::Left, self.layout.columns),
+            Press::NextRow => self.scroll(Direction::Right, self.layout.columns),
             Press::NeedsYou => return self.next_needing_user(now).map(Command::Open),
             Press::Home => {
                 self.filter = None;
@@ -260,8 +298,8 @@ impl App {
     fn turn(&mut self, turn: Turn, direction: Direction, now: Instant) {
         match turn {
             Turn::Nothing => {}
-            Turn::ScrollRows => self.scroll(direction, ROW),
-            Turn::ScrollPages => self.scroll(direction, SCREEN_KEYS),
+            Turn::ScrollRows => self.scroll(direction, self.layout.columns),
+            Turn::ScrollPages => self.scroll(direction, self.layout.keys),
             Turn::Brightness => {
                 let step = self.config.preferences.brightness_step;
                 let next = match direction {
@@ -387,16 +425,18 @@ impl App {
         self.view.threads.contains_key(id).then_some(id)
     }
 
-    fn statuses(&self) -> [Option<Status>; SCREEN_KEYS] {
+    fn statuses(&self) -> Vec<Option<Status>> {
         let requests = status::child_requests(&self.view.threads);
-        std::array::from_fn(|key| {
-            let thread = self.view.threads.get(self.thread_on(key)?)?;
-            Some(status::classify(
-                thread,
-                requests.get(thread.id.as_str()).copied(),
-                self.now,
-            ))
-        })
+        (0..self.layout.keys)
+            .map(|key| {
+                let thread = self.view.threads.get(self.thread_on(key)?)?;
+                Some(status::classify(
+                    thread,
+                    requests.get(thread.id.as_str()).copied(),
+                    self.now,
+                ))
+            })
+            .collect()
     }
 
     /// What is on screen, without titles, names or ids.
@@ -417,7 +457,7 @@ impl App {
 
     fn notice(&self) -> Option<Tile> {
         match self.view.phase {
-            Phase::Live if (0..SCREEN_KEYS).all(|key| self.thread_on(key).is_none()) => {
+            Phase::Live if (0..self.layout.keys).all(|key| self.thread_on(key).is_none()) => {
                 Some(match &self.filter {
                     Some(id) => Tile::notice("NO THREADS", self.project_name(Some(id))),
                     None => Tile::notice("T3", "No threads"),
@@ -438,10 +478,11 @@ impl App {
             .map(|(tile, _)| tile.clone())
             .or_else(|| self.notice());
         let statuses = self.statuses();
-        let tiles = std::array::from_fn(|key| {
+        let covers_key = self.covers_key();
+        let tiles = (0..self.layout.keys).map(|key| {
             let thread = self.thread_on(key).and_then(|id| self.view.threads.get(id));
             let mut tile = match (&cover, thread, statuses[key]) {
-                (Some(cover), _, _) if key == 0 => cover.clone(),
+                (Some(cover), _, _) if key == 0 && covers_key => cover.clone(),
                 (_, Some(thread), Some(status)) => {
                     let text = if self.showing_projects {
                         self.project_name(thread.project_id.as_deref())
@@ -456,10 +497,45 @@ impl App {
             tile
         });
         Screen {
-            tiles,
+            layout: self.layout,
+            tiles: tiles.collect(),
+            side: self.side(cover),
             brightness: self.brightness,
             generation: self.generation,
         }
+    }
+
+    /// The notice or message on top, then how many threads need the user, are working, and
+    /// have no key on this page.
+    fn side(&self, cover: Option<Tile>) -> Vec<Tile> {
+        let mut side = Vec::with_capacity(self.layout.side);
+        if self.layout.side == 0 {
+            return side;
+        }
+        let count = |urgency| {
+            self.ranked
+                .iter()
+                .filter(|ranked| ranked.entry.urgency == urgency)
+                .count()
+        };
+        side.push(
+            cover.unwrap_or_else(|| Tile::count("NEEDS YOU", count(NEEDS_USER), Accent::Attention)),
+        );
+        if self.view.phase == Phase::Live {
+            side.push(Tile::count("WORKING", count(WORKING_URGENCY), Accent::Busy));
+            let shown = (0..self.layout.keys)
+                .filter(|key| self.thread_on(*key).is_some())
+                .count();
+            let listed = self
+                .ranked
+                .iter()
+                .filter(|ranked| self.filter.is_none() || ranked.project == self.filter)
+                .count();
+            let more = listed.saturating_sub(shown);
+            side.push(Tile::count("MORE", more, Accent::Plain));
+        }
+        side.resize(self.layout.side, Tile::blank());
+        side
     }
 }
 
@@ -699,7 +775,7 @@ mod tests {
         assert_eq!(press(&mut app, 4).as_deref(), Some("new"));
 
         act(&mut app, Action::Down(Control::Dial(Dial::Top)));
-        let home: Vec<String> = (0..SCREEN_KEYS)
+        let home: Vec<String> = (0..app.layout.keys)
             .filter_map(|key| press(&mut app, key))
             .collect();
         assert!(home.contains(&"new".to_owned()) && home.contains(&"t08".to_owned()));
@@ -812,6 +888,54 @@ mod tests {
         app.set_config(config, Timestamp::UNIX_EPOCH);
         assert_eq!(press(&mut app, 0).as_deref(), Some("busy"));
         assert_eq!(press(&mut app, 1), None);
+    }
+
+    fn wide_app_with(threads: &[Value]) -> App {
+        let mut app = app_with(threads);
+        app.set_layout(Model::Dock293sV3.layout());
+        app
+    }
+
+    #[test]
+    fn the_293s_shows_fifteen_threads_and_counts_beside_them() {
+        let mut threads = many(17);
+        threads.push(asking("ask"));
+        threads.push(working("busy"));
+        let mut app = wide_app_with(&threads);
+        let screen = app.screen();
+        assert_eq!((screen.tiles.len(), screen.side.len()), (15, 3));
+        assert!(screen.side[0] == Tile::count("NEEDS YOU", 1, Accent::Attention));
+        assert!(screen.side[1] == Tile::count("WORKING", 1, Accent::Busy));
+        assert!(screen.side[2] == Tile::count("MORE", 4, Accent::Plain));
+        assert_eq!(press(&mut app, 14).as_deref(), Some("t12"));
+    }
+
+    #[test]
+    fn the_side_display_takes_notices_so_key_one_stays_pressable() {
+        let mut app = wide_app_with(&[working("busy")]);
+        assert_eq!(button(&mut app, NEEDS_YOU), None);
+        let screen = app.screen();
+        assert!(screen.side[0] == Tile::notice("ALL CLEAR", "Nothing needs you"));
+        assert!(screen.tiles[0] == Tile::thread("busy", Status::Working));
+        assert_eq!(press(&mut app, 0).as_deref(), Some("busy"));
+
+        app.tick(Instant::now() + MESSAGE_TIME * 2);
+        app.update(view(Phase::Offline, &[]), Timestamp::UNIX_EPOCH);
+        let screen = app.screen();
+        assert!(screen.side[0] == Tile::notice("OFFLINE", "T3 Code not reachable"));
+        assert!(screen.side[1] == Tile::blank());
+    }
+
+    #[test]
+    fn another_model_starts_from_home() {
+        let mut app = app_with(&many(20));
+        act(&mut app, Action::Turn(Dial::Top, Direction::Right));
+        app.set_layout(Model::Dock293sV3.layout());
+        assert_eq!(press(&mut app, 0).as_deref(), Some("t00"));
+        assert_eq!(press(&mut app, 14).as_deref(), Some("t14"));
+        app.set_layout(Model::N3.layout());
+        assert_eq!(app.screen().tiles.len(), 6);
+        assert_eq!(press(&mut app, 5).as_deref(), Some("t05"));
     }
 
     #[test]

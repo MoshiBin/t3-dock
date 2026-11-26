@@ -1,7 +1,8 @@
 # t3-dock
 
 Open-source host app that shows [T3 Code](https://github.com/pingdotgg/t3code) agent threads on the
-screen keys of a MiraBox N3 and focuses a thread when you press its key. The stock firmware stays.
+screen keys of a MiraBox Stream Dock N3 or 293S V3 and focuses a thread when you press its key. The
+stock firmware stays.
 
 **Status: early, and working on real hardware.** All four milestones are written and have been used on
 an N3 with T3 Code 0.1.11 on Windows 11. The T3 stream it reads is not a stable API. Some paths, such
@@ -47,6 +48,21 @@ The keys under the screens:
 
 New and settle press T3's default shortcuts, so they don't work if you changed those, or while T3's
 terminal has focus. They are typed only while T3 is in front.
+
+### Stream Dock 293S V3
+
+    +--------+--------+--------+--------+--------+  +-----------+
+    | thread | thread | thread | thread | thread |  | needs you |
+    +--------+--------+--------+--------+--------+  +-----------+
+    | thread | thread | thread | thread | thread |  |  working  |
+    +--------+--------+--------+--------+--------+  +-----------+
+    | thread | thread | thread | thread | thread |  |   more    |
+    +--------+--------+--------+--------+--------+  +-----------+
+
+All 15 keys are threads. The side display can't be pressed: it counts the threads that need you, the
+ones working, and those that didn't get a key. Notices such as "Connecting" show at its top instead
+of on key 1. The 293S has no other keys or dials, so the bindings in the settings window apply only to
+the N3. If both are plugged in, t3-dock uses the N3.
 
 **Settings** in the tray menu opens a window where you can give the three keys and the three dials
 other actions, reverse a dial, and change preferences: the reset brightness, the brightness per
@@ -102,7 +118,9 @@ ids, tokens or message text.
 
     cargo test
     cargo test preview -- --ignored         render sample tiles to target/tiles.png
-    cargo test read_survives -- --ignored   HID regression test: needs an N3, stop t3-dock first
+    cargo test read_survives -- --ignored   HID regression test: needs a Stream Dock, stop t3-dock first
+    cargo test show_numbers -- --ignored --nocapture
+                                            number every key and print presses, to check the order
     cargo run --example probe -- out.png    open the N3 without writing to it
 
 Third-party code is credited in [THIRD_PARTY.md](THIRD_PARTY.md).

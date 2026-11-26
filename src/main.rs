@@ -9,6 +9,7 @@ mod focus;
 mod input;
 mod log;
 mod login;
+mod model;
 mod render;
 mod settings;
 mod status;
@@ -29,7 +30,7 @@ use crate::app::App;
 use crate::log::log;
 
 const USAGE: &str = "usage:
-  t3-dock [run]      show threads on the N3
+  t3-dock [run]      show threads on the Stream Dock
   t3-dock settings   rebind the controls and change preferences
   t3-dock auth       create or check the read-only T3 token
   t3-dock stop       stop the running instance";
@@ -176,7 +177,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
     let device = device::start(screen_rx, message_tx)?;
     let tray = tray::Tray::start(t3_home.clone(), data.clone());
     let client = tokio::spawn(t3::run_all(t3_home, data, view_tx));
-    let (mut health, mut n3_connected) = (t3::Health::default(), false);
+    let (mut health, mut connected) = (t3::Health::default(), None);
     let mut tray_text = String::new();
 
     // One worker, so presses cannot race each other. The newest press wins.
@@ -218,7 +219,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                 }
             }
             _ = clock.tick() => {
-                // The wall clock jumping means the PC slept, and the N3 may have lost its images.
+                // The wall clock jumping means the PC slept, and the device may have lost its images.
                 let now = SystemTime::now();
                 if now.duration_since(last_tick).is_ok_and(|gap| gap > RESUME_GAP) {
                     log!("app: resumed from sleep, redrawing");
@@ -237,9 +238,12 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
             }
             message = messages.recv() => match message {
                 None => break Err("the device task stopped".to_owned()),
-                Some(device::Message::Connected) => n3_connected = true,
+                Some(device::Message::Connected(model)) => {
+                    connected = Some(model);
+                    app.set_layout(model.layout());
+                }
                 Some(device::Message::Disconnected) => {
-                    n3_connected = false;
+                    connected = None;
                     app.release_all();
                 }
                 Some(device::Message::Input(event)) => {
@@ -257,7 +261,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
             summary = now_showing;
             log!("{summary}");
         }
-        let text = tray_status(&health, n3_connected);
+        let text = tray_status(&health, connected);
         if text != tray_text {
             tray.set_status(text.clone());
             tray_text = text;
@@ -292,11 +296,10 @@ fn phase_text(phase: t3::Phase) -> &'static str {
     }
 }
 
-fn tray_status(health: &t3::Health, n3_connected: bool) -> String {
-    let n3 = if n3_connected {
-        "connected"
-    } else {
-        "not connected"
+fn tray_status(health: &t3::Health, connected: Option<model::Model>) -> String {
+    let device = match connected {
+        Some(model) => format!("{} connected", model.name()),
+        None => "Stream Dock not connected".to_owned(),
     };
     let mut text = format!("T3 {}", phase_text(health.local));
     if !health.remotes.is_empty() {
@@ -318,7 +321,7 @@ fn tray_status(health: &t3::Health, n3_connected: bool) -> String {
             text.push_str(&format!(" ({tokens} need a token)"));
         }
     }
-    format!("{text}, N3 {n3}")
+    format!("{text}, {device}")
 }
 
 #[cfg(test)]
