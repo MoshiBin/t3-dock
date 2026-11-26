@@ -22,6 +22,7 @@ use crate::model::{Layout, Model};
 use crate::render::{Accent, Tile};
 use crate::status::{self, Status};
 use crate::t3::{Phase, View, split_key};
+use crate::usage::Usage;
 
 /// Idle and monitoring threads.
 const IDLE_URGENCY: u8 = 4;
@@ -76,6 +77,8 @@ pub struct App {
     /// When the threads were last ranked. Ended snoozes depend on it.
     now: Timestamp,
     config: Config,
+    /// Shown at the bottom of the side display instead of the threads without a key.
+    usage: Option<Usage>,
 }
 
 impl App {
@@ -96,7 +99,12 @@ impl App {
             generation: 0,
             now: Timestamp::UNIX_EPOCH,
             config,
+            usage: None,
         }
+    }
+
+    pub fn set_usage(&mut self, usage: Option<Usage>) {
+        self.usage = usage;
     }
 
     /// New bindings or preferences, from the settings window.
@@ -505,8 +513,8 @@ impl App {
         }
     }
 
-    /// The notice or message on top, then how many threads need the user, are working, and
-    /// have no key on this page.
+    /// The notice or message on top, then how many threads need the user and are working. Last
+    /// the allowance if there is one, else how many threads have no key on this page.
     fn side(&self, cover: Option<Tile>) -> Vec<Tile> {
         let mut side = Vec::with_capacity(self.layout.side);
         if self.layout.side == 0 {
@@ -533,6 +541,13 @@ impl App {
                 .count();
             let more = listed.saturating_sub(shown);
             side.push(Tile::count("MORE", more, Accent::Plain));
+        } else {
+            side.resize(self.layout.side - 1, Tile::blank());
+        }
+        // Not about T3, so it shows while T3 is away too.
+        if let Some(usage) = &self.usage {
+            side.truncate(self.layout.side - 1);
+            side.push(Tile::allowance(&usage.banner(), usage.used, usage.limit));
         }
         side.resize(self.layout.side, Tile::blank());
         side
@@ -924,6 +939,19 @@ mod tests {
         let screen = app.screen();
         assert!(screen.side[0] == Tile::notice("OFFLINE", "T3 Code not reachable"));
         assert!(screen.side[1] == Tile::blank());
+    }
+
+    #[test]
+    fn an_allowance_replaces_the_count_of_threads_without_a_key() {
+        let mut app = wide_app_with(&many(20));
+        let usage = Usage::parse(r#"{"label": "ACU", "used": 1270.5, "limit": 1350}"#);
+        app.set_usage(usage);
+        let tile = Tile::allowance("ACU LEFT", 1270.5, 1350.0);
+        assert!(app.screen().side[2] == tile);
+        app.update(view(Phase::Offline, &[]), Timestamp::UNIX_EPOCH);
+        assert!(app.screen().side[2] == tile);
+        app.set_usage(None);
+        assert!(app.screen().side[2] == Tile::blank());
     }
 
     #[test]

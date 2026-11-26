@@ -64,6 +64,15 @@ ones working, and those that didn't get a key. Notices such as "Connecting" show
 of on key 1. The 293S has no other keys or dials, so the bindings in the settings window apply only to
 the N3. If both are plugged in, t3-dock uses the N3.
 
+The bottom tile can show an allowance instead, such as an AI plan's monthly credits: what is left,
+and a bar of how much is used that turns amber at 75% and red at 90%. t3-dock holds no credentials
+for it. Another program that has them writes `%LOCALAPPDATA%\t3-dock\usage.json` (a temporary
+file, then rename), and the tile follows its changes:
+
+    {"label": "ACU", "used": 1270.5, "limit": 1350}
+
+Delete the file to bring back the count of threads without a key.
+
 **Settings** in the tray menu opens a window where you can give the three keys and the three dials
 other actions, reverse a dial, and change preferences: the reset brightness, the brightness per
 dial click, how long messages show, hiding idle threads and start at login. Save applies them to the

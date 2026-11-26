@@ -15,6 +15,7 @@ mod settings;
 mod status;
 mod t3;
 mod tray;
+mod usage;
 mod win;
 
 use std::io::Write;
@@ -167,6 +168,7 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
 
     let brightness_file = data.join("brightness");
     let mut settings = config::Watch::new(data.join(config::FILE));
+    let mut allowance = usage::Watch::new(&data);
     let config = config::Config::load(settings.path());
     let brightness = saved_brightness(&brightness_file, config.preferences.default_brightness);
     let mut app = App::new(brightness, config);
@@ -209,6 +211,9 @@ async fn run(instance: &win::Instance, t3_home: PathBuf, data: PathBuf) -> Resul
                 if let Some(config) = settings.changed() {
                     log!("config: reloaded");
                     app.set_config(config, Timestamp::now());
+                }
+                if let Some(usage) = allowance.changed() {
+                    app.set_usage(usage);
                 }
                 // Written here, not on every click of the dial.
                 if app.brightness() != saved {

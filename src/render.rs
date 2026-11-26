@@ -18,6 +18,7 @@ const BLUE: [u8; 3] = [60, 140, 255];
 const GREEN: [u8; 3] = [50, 200, 110];
 const RED: [u8; 3] = [235, 70, 70];
 const GRAY: [u8; 3] = [130, 130, 140];
+const TRACK: [u8; 3] = [60, 60, 68];
 
 /// Everything that affects one key's pixels. No `Debug`, since it holds a title.
 #[derive(Clone, PartialEq, Eq)]
@@ -26,6 +27,8 @@ pub struct Tile {
     body: String,
     accent: [u8; 3],
     large: bool,
+    /// A bar along the bottom, filled this many thousandths.
+    gauge: Option<u16>,
     pub pressed: bool,
 }
 
@@ -61,6 +64,7 @@ impl Tile {
             },
             accent,
             large: false,
+            gauge: None,
             pressed: false,
         }
     }
@@ -71,6 +75,7 @@ impl Tile {
             body: body.into(),
             accent: GRAY,
             large: false,
+            gauge: None,
             pressed: false,
         }
     }
@@ -81,6 +86,7 @@ impl Tile {
             body: String::new(),
             accent: DARK,
             large: false,
+            gauge: None,
             pressed: false,
         }
     }
@@ -99,6 +105,36 @@ impl Tile {
             body: count.to_string(),
             accent,
             large: true,
+            gauge: None,
+            pressed: false,
+        }
+    }
+
+    /// What is left of an allowance, with a bar of how much is used. Green, then amber from 75%
+    /// used and red from 90%.
+    pub fn allowance(banner: &str, used: f64, limit: f64) -> Self {
+        let fraction = if limit > 0.0 {
+            (used / limit).clamp(0.0, 1.0)
+        } else {
+            1.0
+        };
+        let accent = match fraction {
+            f if f >= 0.9 => RED,
+            f if f >= 0.75 => AMBER,
+            _ => GREEN,
+        };
+        let left = (limit - used).max(0.0);
+        let body = if left >= 10.0 {
+            format!("{left:.0}")
+        } else {
+            format!("{left:.1}")
+        };
+        Self {
+            banner: banner.into(),
+            body,
+            accent,
+            large: true,
+            gauge: Some((fraction * 1000.0).round() as u16),
             pressed: false,
         }
     }
@@ -111,6 +147,7 @@ impl Tile {
             body: number.to_string(),
             accent: GRAY,
             large: true,
+            gauge: None,
             pressed: false,
         }
     }
@@ -174,7 +211,9 @@ impl Renderer {
                 align: Some(Align::Center),
             },
         );
-        let (size, line_height, lines, weight, align) = if tile.large {
+        let (size, line_height, lines, weight, align) = if tile.gauge.is_some() {
+            (26.0, 32.0, 1, Weight::BOLD, Some(Align::Center))
+        } else if tile.large {
             (34.0, 44.0, 1, Weight::BOLD, Some(Align::Center))
         } else {
             (12.0, 15.0, 3, Weight::NORMAL, None)
@@ -193,6 +232,9 @@ impl Renderer {
                 align,
             },
         );
+        if let Some(permille) = tile.gauge {
+            draw_gauge(&mut image, scale, permille, tile.accent);
+        }
         image
     }
 
@@ -239,6 +281,20 @@ impl Renderer {
                 }
             },
         );
+    }
+}
+
+/// A bar near the bottom: the used part in `accent` on a gray track.
+fn draw_gauge(image: &mut RgbImage, scale: f32, permille: u16, accent: [u8; 3]) {
+    let at = |value: f32| (value * scale).round() as u32;
+    let (left, right) = (at(4.0), image.width() - at(4.0));
+    let (top, bottom) = (at(51.0), at(59.0));
+    let filled = left + (right - left) * u32::from(permille.min(1000)) / 1000;
+    for y in top..bottom {
+        for x in left..right {
+            let color = if x < filled { accent } else { TRACK };
+            image.put_pixel(x, y, Rgb(color));
+        }
     }
 }
 
@@ -297,6 +353,24 @@ mod tests {
     }
 
     #[test]
+    fn an_allowance_fills_its_bar_with_what_is_used() {
+        let tile = Tile::allowance("ACU LEFT", 1270.5, 1350.0);
+        assert_eq!(
+            (tile.body.as_str(), tile.gauge, tile.accent),
+            ("80", Some(941), RED)
+        );
+        let tile = Tile::allowance("ACU LEFT", 100.0, 1000.0);
+        assert_eq!((tile.body.as_str(), tile.accent), ("900", GREEN));
+        let tile = Tile::allowance("ACU LEFT", 1400.0, 1350.0);
+        assert_eq!((tile.body.as_str(), tile.gauge), ("0.0", Some(1000)));
+
+        let image = Renderer::new().render(&Tile::allowance("ACU LEFT", 50.0, 100.0), 88);
+        // Used on the left of the bar, the rest on the right.
+        assert_eq!(image.get_pixel(10, 75).0, GREEN);
+        assert_eq!(image.get_pixel(78, 75).0, TRACK);
+    }
+
+    #[test]
     fn titles_are_flattened() {
         assert_eq!(
             Tile::thread(" two\n\tlines ", Status::Idle).body,
@@ -321,9 +395,13 @@ mod tests {
             ),
             Tile::notice("NO TOKEN", "Use the tray menu"),
             pressed,
+            Tile::allowance("ACU LEFT", 400.0, 1350.0),
+            Tile::allowance("ACU LEFT", 1100.0, 1350.0),
+            Tile::allowance("ACU LEFT", 1270.5, 1350.0),
         ];
         let mut renderer = Renderer::new();
-        let mut sheet = RgbImage::from_pixel(3 * 208 + 16, 2 * 208 + 16, Rgb([55, 55, 58]));
+        let rows = tiles.len().div_ceil(3) as u32;
+        let mut sheet = RgbImage::from_pixel(3 * 208 + 16, rows * 208 + 16, Rgb([55, 55, 58]));
         for (i, tile) in tiles.iter().enumerate() {
             let key = renderer.render(tile, SIZE);
             let zoomed =
